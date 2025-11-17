@@ -17,7 +17,7 @@
 		<maven.compiler.source>17</maven.compiler.source>
 		<maven.compiler.target>17</maven.compiler.target>
 		<tycho.version>4.0.11</tycho.version>
-		<eclipse.version>2024-09</eclipse.version>
+		<eclipse.version>2024-12</eclipse.version>
 	</properties>
 
 	<modules>
@@ -30,6 +30,16 @@
 		<repository>
 			<id>eclipse-${eclipse.version}</id>
 			<url>https://download.eclipse.org/releases/${eclipse.version}</url>
+			<layout>p2</layout>
+		</repository>
+		<repository>
+			<id>eclipse-epp-${eclipse.version}</id>
+			<url>https://download.eclipse.org/technology/epp/packages/${eclipse.version}</url>
+			<layout>p2</layout>
+		</repository>
+		<repository>
+			<id>eclipse-latest</id>
+			<url>https://download.eclipse.org/eclipse/updates/latest</url>
 			<layout>p2</layout>
 		</repository>
 	</repositories>

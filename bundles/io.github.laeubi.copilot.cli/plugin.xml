@@ -2,5 +2,23 @@
 <?eclipse version="3.4"?>
 <plugin>
    <!-- Plugin configuration for GitHub Copilot CLI integration -->
-   <!-- Extension points and contributions will be added here -->
+   
+   <!-- Terminal connector for Copilot CLI -->
+   <extension point="org.eclipse.terminal.control.connectors">
+      <connector
+            class="io.github.laeubi.copilot.cli.connector.CopilotCliConnector"
+            hidden="false"
+            id="io.github.laeubi.copilot.cli.connector"
+            name="Copilot CLI"/>
+   </extension>
+   
+   <!-- Terminal launcher delegate for Copilot CLI -->
+   <extension point="org.eclipse.terminal.view.ui.launcherDelegates">
+      <delegate
+            class="io.github.laeubi.copilot.cli.launcher.CopilotCliLauncherDelegate"
+            id="io.github.laeubi.copilot.cli.launcher"
+            label="Copilot CLI">
+      </delegate>
+   </extension>
+   
 </plugin>
