@@ -21,4 +21,31 @@
       </delegate>
    </extension>
    
+   <!-- Command contributions -->
+   <extension point="org.eclipse.ui.commands">
+      <command
+            categoryId="org.eclipse.terminal.view.ui.commands.category"
+            id="io.github.laeubi.copilot.cli.command.openPrompt"
+            name="Open Copilot Prompt"
+            description="Open Copilot CLI terminal for the current context">
+      </command>
+   </extension>
+
+   <!-- Key bindings -->
+   <extension point="org.eclipse.ui.bindings">
+      <key
+            commandId="io.github.laeubi.copilot.cli.command.openPrompt"
+            contextId="org.eclipse.ui.contexts.window"
+            schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+            sequence="M1+M2+P"/>
+   </extension>
+
+   <!-- Handler contributions -->
+   <extension point="org.eclipse.ui.handlers">
+      <handler
+            class="io.github.laeubi.copilot.cli.handler.OpenPromptHandler"
+            commandId="io.github.laeubi.copilot.cli.command.openPrompt">
+      </handler>
+   </extension>
+   
 </plugin>
