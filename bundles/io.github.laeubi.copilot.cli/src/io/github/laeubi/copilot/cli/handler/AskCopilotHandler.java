@@ -24,11 +24,8 @@ import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.Platform;
-import org.eclipse.jface.dialogs.InputDialog;
 import org.eclipse.jface.viewers.ISelection;
 import org.eclipse.jface.viewers.IStructuredSelection;
-import org.eclipse.jface.window.Window;
-import org.eclipse.swt.widgets.Display;
 import org.eclipse.terminal.view.core.ITerminalsConnectorConstants;
 import org.eclipse.ui.handlers.HandlerUtil;
 
@@ -54,22 +51,7 @@ public class AskCopilotHandler extends AbstractHandler {
 				// Fallback to user home
 				workingDir = System.getProperty("user.home");
 			}
-
-			// Show prompt dialog
-			InputDialog dialog = new InputDialog(
-				Display.getDefault().getActiveShell(),
-				"Ask Copilot",
-				"Enter your prompt for GitHub Copilot:",
-				"",
-				null
-			);
-
-			if (dialog.open() == Window.OK) {
-				String prompt = dialog.getValue();
-				// Open the Copilot terminal with the determined working directory
-				openCopilotTerminal(workingDir, prompt);
-			}
-
+			openCopilotTerminal(workingDir, null);
 		} catch (Exception e) {
 			ILog.get().error("Error opening Copilot terminal", e);
 		}
@@ -164,17 +146,7 @@ public class AskCopilotHandler extends AbstractHandler {
 			if (error != null) {
 				ILog.get().error("Error opening Copilot terminal", error);
 			} else if (prompt != null && !prompt.trim().isEmpty()) {
-				// Copy prompt to clipboard for easy pasting
-				Display.getDefault().asyncExec(() -> {
-					try {
-						org.eclipse.swt.dnd.Clipboard clipboard = new org.eclipse.swt.dnd.Clipboard(Display.getDefault());
-						org.eclipse.swt.dnd.TextTransfer textTransfer = org.eclipse.swt.dnd.TextTransfer.getInstance();
-						clipboard.setContents(new Object[] { prompt }, new org.eclipse.swt.dnd.Transfer[] { textTransfer });
-						clipboard.dispose();
-					} catch (Exception e) {
-						ILog.get().error("Error copying prompt to clipboard", e);
-					}
-				});
+				// TODO paste as string into terminal
 			}
 		});
 	}
