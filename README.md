@@ -8,7 +8,10 @@ An Eclipse plugin that integrates [GitHub Copilot CLI](https://github.com/github
 
 - Integration of GitHub Copilot CLI capabilities into Eclipse
 - Quick access to AI-powered terminal commands
+- **Context-aware Copilot Terminal**: Open a Copilot CLI terminal for the current file's Git repository
+- **Key binding (Ctrl+Shift+P)**: Quickly open Copilot terminal with a keyboard shortcut
 - Seamless workflow within the Eclipse IDE
+- Automatic Git repository detection for context-aware terminal sessions
 
 ## Prerequisites
 
@@ -38,7 +41,56 @@ An Eclipse plugin that integrates [GitHub Copilot CLI](https://github.com/github
 
 ## Usage
 
-(Usage instructions will be added as features are implemented)
+### Opening a Copilot Terminal
+
+The plugin provides multiple ways to open a Copilot CLI terminal:
+
+#### Using the Keyboard Shortcut
+
+Press **Ctrl+Shift+P** (or **Cmd+Shift+P** on macOS) to open a Copilot terminal for your current context:
+
+- If you have a file open in the editor, the plugin will:
+  1. Detect the file's location
+  2. Search upward for a Git repository root (a directory containing `.git`)
+  3. Open a Copilot terminal with the repository root as the working directory
+  
+- If no editor is active, it will use the currently selected item in the Project Explorer
+
+- If a terminal already exists for that Git repository, it will reuse the existing terminal instead of creating a new one
+
+#### From the Terminal View
+
+You can also manually launch a Copilot terminal from Eclipse's Terminal view using the standard terminal launcher menu.
+
+## Implementation Status
+
+### Completed Features
+
+- ✅ Terminal connector for GitHub Copilot CLI
+- ✅ Terminal launcher delegate
+- ✅ Context-aware terminal opening via Ctrl+Shift+P
+- ✅ Git repository detection
+- ✅ Terminal reuse for the same repository
+- ✅ Integration with Eclipse editor and Project Explorer
+
+### Technical Details
+
+The plugin uses the Eclipse Terminal framework to provide:
+- Process-based terminal connector running the `copilot` CLI command
+- Command handler that extracts context from the active editor or selection
+- Automatic detection of Git repository roots by searching for `.git` directories
+- Working directory configuration based on detected context
+
+## Configuration
+
+The plugin works out of the box if you have the GitHub Copilot CLI installed and available in your system PATH. To verify your installation:
+
+```bash
+copilot --version
+```
+
+If the command is not found, please install the GitHub Copilot CLI following the [official installation guide](https://github.com/github/copilot-cli).
+
 
 ## Building from Source
 
