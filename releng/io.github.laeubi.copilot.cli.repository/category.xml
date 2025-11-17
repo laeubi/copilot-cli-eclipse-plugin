@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<site>
+   <feature url="features/io.github.laeubi.copilot.cli.feature_1.0.0.qualifier.jar" id="io.github.laeubi.copilot.cli.feature" version="1.0.0.qualifier">
+      <category name="copilot-cli"/>
+   </feature>
+   <category-def name="copilot-cli" label="GitHub Copilot CLI">
+      <description>
+         Eclipse plugin integration for GitHub Copilot CLI
+      </description>
+   </category-def>
+</site>
