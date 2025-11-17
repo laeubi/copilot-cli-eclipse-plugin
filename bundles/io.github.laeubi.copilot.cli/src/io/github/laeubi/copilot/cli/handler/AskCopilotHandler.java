@@ -12,14 +12,12 @@
 package io.github.laeubi.copilot.cli.handler;
 
 import java.io.File;
-import java.io.OutputStream;
 import java.util.HashMap;
 import java.util.Map;
 
 import org.eclipse.core.commands.AbstractHandler;
 import org.eclipse.core.commands.ExecutionEvent;
 import org.eclipse.core.commands.ExecutionException;
-import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.runtime.IAdaptable;
 import org.eclipse.core.runtime.ILog;
@@ -27,47 +25,37 @@ import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.jface.dialogs.InputDialog;
-import org.eclipse.jface.text.ITextSelection;
 import org.eclipse.jface.viewers.ISelection;
 import org.eclipse.jface.viewers.IStructuredSelection;
 import org.eclipse.jface.window.Window;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.terminal.view.core.ITerminalsConnectorConstants;
-import org.eclipse.ui.IEditorInput;
-import org.eclipse.ui.IEditorPart;
-import org.eclipse.ui.IPathEditorInput;
-import org.eclipse.ui.IWorkbenchPage;
 import org.eclipse.ui.handlers.HandlerUtil;
-import org.eclipse.ui.texteditor.ITextEditor;
 
 import io.github.laeubi.copilot.cli.launcher.CopilotCliLauncherDelegate;
 
 /**
- * Handler for the "Open Prompt" command that opens a Copilot CLI terminal
- * for the current editor context. It finds the Git repository root and
- * either focuses an existing terminal or creates a new one.
+ * Handler for the "Ask Copilot" context menu command that opens a Copilot CLI terminal
+ * for the selected resource's Git repository root.
  */
-public class OpenPromptHandler extends AbstractHandler {
+public class AskCopilotHandler extends AbstractHandler {
 
 	@Override
 	public Object execute(ExecutionEvent event) throws ExecutionException {
 		try {
-			// Get the working directory from active editor or selection
+			// Get the working directory from selection
 			String workingDir = getWorkingDirectory(event);
 			if (workingDir == null) {
 				// Fallback to user home
 				workingDir = System.getProperty("user.home");
 			}
 
-			// Get context information for pre-filling the dialog
-			String initialPrompt = buildInitialPrompt(event, workingDir);
-
 			// Show prompt dialog
 			InputDialog dialog = new InputDialog(
 				Display.getDefault().getActiveShell(),
 				"Ask Copilot",
 				"Enter your prompt for GitHub Copilot:",
-				initialPrompt,
+				"",
 				null
 			);
 
@@ -84,79 +72,9 @@ public class OpenPromptHandler extends AbstractHandler {
 	}
 
 	/**
-	 * Build the initial prompt text based on the current context
-	 */
-	private String buildInitialPrompt(ExecutionEvent event, String workingDir) throws ExecutionException {
-		IWorkbenchPage page = HandlerUtil.getActiveWorkbenchWindow(event).getActivePage();
-		if (page != null) {
-			IEditorPart editor = page.getActiveEditor();
-			if (editor instanceof ITextEditor) {
-				ITextEditor textEditor = (ITextEditor) editor;
-				ISelection selection = textEditor.getSelectionProvider().getSelection();
-				
-				if (selection instanceof ITextSelection) {
-					ITextSelection textSelection = (ITextSelection) selection;
-					if (!textSelection.isEmpty()) {
-						// Get the file from the editor
-						File file = getFileFromEditor(editor);
-						if (file != null && workingDir != null) {
-							// Build relative path
-							String relativePath = getRelativePath(new File(workingDir), file);
-							
-							// Get line numbers
-							int startLine = textSelection.getStartLine() + 1; // Convert to 1-based
-							int endLine = textSelection.getEndLine() + 1; // Convert to 1-based
-							
-							// Build the reference string
-							if (startLine == endLine) {
-								return String.format("See %s[Line %d]", relativePath, startLine);
-							} else {
-								return String.format("See %s[Line %d-%d]", relativePath, startLine, endLine);
-							}
-						}
-					}
-				}
-			}
-		}
-		return "";
-	}
-
-	/**
-	 * Get the relative path from base directory to target file
-	 */
-	private String getRelativePath(File baseDir, File targetFile) {
-		try {
-			Path basePath = new Path(baseDir.getCanonicalPath());
-			Path targetPath = new Path(targetFile.getCanonicalPath());
-			
-			if (basePath.isPrefixOf(targetPath)) {
-				IPath relative = targetPath.makeRelativeTo(basePath);
-				return relative.toString();
-			}
-		} catch (Exception e) {
-			// Fall back to absolute path
-		}
-		return targetFile.getName();
-	}
-
-	/**
-	 * Determine the working directory from the current context
+	 * Determine the working directory from the current selection
 	 */
 	private String getWorkingDirectory(ExecutionEvent event) throws ExecutionException {
-		// Try to get from active editor first
-		IWorkbenchPage page = HandlerUtil.getActiveWorkbenchWindow(event).getActivePage();
-		if (page != null) {
-			IEditorPart editor = page.getActiveEditor();
-			if (editor != null) {
-				File file = getFileFromEditor(editor);
-				if (file != null) {
-					File gitRoot = findGitRoot(file);
-					return gitRoot != null ? gitRoot.getAbsolutePath() : file.getParent();
-				}
-			}
-		}
-
-		// Try to get from selection
 		ISelection selection = HandlerUtil.getCurrentSelection(event);
 		if (selection instanceof IStructuredSelection && !selection.isEmpty()) {
 			Object element = ((IStructuredSelection) selection).iterator().next();
@@ -185,32 +103,6 @@ public class OpenPromptHandler extends AbstractHandler {
 			}
 		}
 
-		return null;
-	}
-
-	/**
-	 * Extract the file from the active editor
-	 */
-	private File getFileFromEditor(IEditorPart editor) {
-		IEditorInput input = editor.getEditorInput();
-		
-		// Try IPathEditorInput first (most common)
-		if (input instanceof IPathEditorInput) {
-			IPath path = ((IPathEditorInput) input).getPath();
-			if (path != null) {
-				return path.toFile();
-			}
-		}
-		
-		// Try to adapt to IFile
-		IFile file = input.getAdapter(IFile.class);
-		if (file != null) {
-			IPath location = file.getLocation();
-			if (location != null) {
-				return location.toFile();
-			}
-		}
-		
 		return null;
 	}
 
