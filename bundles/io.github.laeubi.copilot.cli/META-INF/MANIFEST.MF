@@ -7,6 +7,11 @@ Bundle-Activator: io.github.laeubi.copilot.cli.Activator
 Bundle-Vendor: Christoph Läubrich
 Bundle-RequiredExecutionEnvironment: JavaSE-17
 Require-Bundle: org.eclipse.ui,
- org.eclipse.core.runtime
+ org.eclipse.core.runtime,
+ org.eclipse.terminal.control;bundle-version="[1.0.0,2.0.0)",
+ org.eclipse.terminal.connector.process;bundle-version="[1.0.0,2.0.0)",
+ org.eclipse.terminal.view.core;bundle-version="[1.0.0,2.0.0)",
+ org.eclipse.terminal.view.ui;bundle-version="[1.0.0,2.0.0)"
+Import-Package: org.eclipse.cdt.utils.pty;mandatory:=native
 Bundle-ActivationPolicy: lazy
 Automatic-Module-Name: io.github.laeubi.copilot.cli
