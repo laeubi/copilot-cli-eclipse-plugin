@@ -41,6 +41,11 @@ import io.github.laeubi.copilot.cli.launcher.CopilotCliLauncherDelegate;
 public class AskCopilotHandler extends AbstractHandler {
 
 	@Override
+	public boolean isEnabled() {
+		return true;
+	}
+
+	@Override
 	public Object execute(ExecutionEvent event) throws ExecutionException {
 		try {
 			// Get the working directory from selection

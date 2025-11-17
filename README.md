@@ -52,7 +52,7 @@ The plugin provides multiple ways to open a Copilot CLI terminal:
 
 #### Using the Keyboard Shortcut
 
-Press **Ctrl+Shift+P** (or **Cmd+Shift+P** on macOS) to:
+Press **Ctrl+Alt+C** (or **Cmd+Alt+C** on macOS) to:
 
 1. **Show a prompt dialog** where you can enter your question or request for GitHub Copilot
 2. **Automatically pre-fill** the dialog with file context if you have text selected in the editor

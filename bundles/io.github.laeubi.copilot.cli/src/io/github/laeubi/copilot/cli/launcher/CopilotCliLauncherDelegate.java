@@ -38,13 +38,12 @@ public class CopilotCliLauncherDelegate extends AbstractLauncherDelegate {
 
 	@Override
 	public boolean needsUserConfiguration() {
-		return false;
+		return true;
 	}
 
 	@Override
 	public IConfigurationPanel getPanel(IConfigurationPanelContainer container) {
-		// No configuration panel needed for Copilot CLI
-		return null;
+		return new CopilotCliConfigurationPanel(container);
 	}
 
 	@Override

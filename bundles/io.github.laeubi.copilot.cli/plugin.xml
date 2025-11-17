@@ -23,14 +23,18 @@
    
    <!-- Command contributions -->
    <extension point="org.eclipse.ui.commands">
+      <category
+            id="io.github.laeubi.copilot.cli.commands.category"
+            name="GitHub Copilot CLI">
+      </category>
       <command
-            categoryId="org.eclipse.terminal.view.ui.commands.category"
+            categoryId="io.github.laeubi.copilot.cli.commands.category"
             id="io.github.laeubi.copilot.cli.command.openPrompt"
             name="Open Copilot Prompt"
             description="Open Copilot CLI terminal for the current context">
       </command>
       <command
-            categoryId="org.eclipse.terminal.view.ui.commands.category"
+            categoryId="io.github.laeubi.copilot.cli.commands.category"
             id="io.github.laeubi.copilot.cli.command.askCopilot"
             name="Ask Copilot"
             description="Ask Copilot from Navigator or Project Explorer">
@@ -43,7 +47,7 @@
             commandId="io.github.laeubi.copilot.cli.command.openPrompt"
             contextId="org.eclipse.ui.contexts.window"
             schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
-            sequence="M1+M2+P"/>
+            sequence="M1+M3+C"/>
    </extension>
 
    <!-- Handler contributions -->
@@ -60,6 +64,7 @@
    
    <!-- Context menu contributions for Navigator and Project Explorer -->
    <extension point="org.eclipse.ui.menus">
+      <!-- Project Explorer uses Common Navigator framework -->
       <menuContribution
             allPopups="false"
             locationURI="popup:org.eclipse.ui.navigator.ProjectExplorer#PopupMenu?after=additions">
@@ -69,6 +74,22 @@
                style="push">
          </command>
       </menuContribution>
+      <!-- Also add to common navigator general popup -->
+      <menuContribution
+            allPopups="false"
+            locationURI="popup:org.eclipse.ui.popup.any?after=additions">
+         <command
+               commandId="io.github.laeubi.copilot.cli.command.askCopilot"
+               label="Ask Copilot"
+               style="push">
+            <visibleWhen checkEnabled="false">
+               <with variable="selection">
+                  <count value="1"/>
+               </with>
+            </visibleWhen>
+         </command>
+      </menuContribution>
+      <!-- Package Explorer -->
       <menuContribution
             allPopups="false"
             locationURI="popup:org.eclipse.jdt.ui.PackageExplorer#PopupMenu?after=additions">
@@ -78,6 +99,7 @@
                style="push">
          </command>
       </menuContribution>
+      <!-- Resource Navigator (legacy) -->
       <menuContribution
             allPopups="false"
             locationURI="popup:org.eclipse.ui.views.ResourceNavigator#PopupMenu?after=additions">

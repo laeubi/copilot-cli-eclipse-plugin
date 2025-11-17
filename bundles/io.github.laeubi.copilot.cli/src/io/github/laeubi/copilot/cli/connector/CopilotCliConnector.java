@@ -11,6 +11,8 @@
  *******************************************************************************/
 package io.github.laeubi.copilot.cli.connector;
 
+import org.eclipse.core.runtime.IAdaptable;
+import org.eclipse.terminal.connector.ISettingsPage;
 import org.eclipse.terminal.connector.process.ProcessConnector;
 import org.eclipse.terminal.connector.process.ProcessSettings;
 
@@ -20,12 +22,33 @@ import org.eclipse.terminal.connector.process.ProcessSettings;
  * This connector extends ProcessConnector to provide a terminal interface
  * for GitHub Copilot CLI.
  */
-public class CopilotCliConnector extends ProcessConnector {
+public class CopilotCliConnector extends ProcessConnector implements IAdaptable {
+
+	private final ProcessSettings settings;
 
 	/**
 	 * Constructor.
 	 */
 	public CopilotCliConnector() {
-		super(new ProcessSettings());
+		this(new ProcessSettings());
+	}
+
+	/**
+	 * Constructor with settings.
+	 */
+	public CopilotCliConnector(ProcessSettings settings) {
+		super(settings);
+		this.settings = settings;
+		// Pre-configure with copilot command
+		settings.setImage("copilot");
+	}
+
+	@SuppressWarnings("unchecked")
+	@Override
+	public <T> T getAdapter(Class<T> adapter) {
+		if (adapter == ISettingsPage.class) {
+			return (T) new CopilotCliSettingsPage(settings);
+		}
+		return null;
 	}
 }

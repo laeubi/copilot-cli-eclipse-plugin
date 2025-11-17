@@ -12,7 +12,6 @@
 package io.github.laeubi.copilot.cli.handler;
 
 import java.io.File;
-import java.io.OutputStream;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -50,6 +49,11 @@ import io.github.laeubi.copilot.cli.launcher.CopilotCliLauncherDelegate;
 public class OpenPromptHandler extends AbstractHandler {
 
 	@Override
+	public boolean isEnabled() {
+		return true;
+	}
+
+	@Override
 	public Object execute(ExecutionEvent event) throws ExecutionException {
 		try {
 			// Get the working directory from active editor or selection
@@ -61,6 +65,10 @@ public class OpenPromptHandler extends AbstractHandler {
 
 			// Get context information for pre-filling the dialog
 			String initialPrompt = buildInitialPrompt(event, workingDir);
+			if (initialPrompt == null || initialPrompt.isBlank()) {
+				openCopilotTerminal(workingDir, null);
+				return null;
+			}
 
 			// Show prompt dialog
 			InputDialog dialog = new InputDialog(
@@ -96,7 +104,7 @@ public class OpenPromptHandler extends AbstractHandler {
 				
 				if (selection instanceof ITextSelection) {
 					ITextSelection textSelection = (ITextSelection) selection;
-					if (!textSelection.isEmpty()) {
+					if (!textSelection.isEmpty() && textSelection.getLength() > 0) {
 						// Get the file from the editor
 						File file = getFileFromEditor(editor);
 						if (file != null && workingDir != null) {
@@ -267,17 +275,8 @@ public class OpenPromptHandler extends AbstractHandler {
 			if (error != null) {
 				ILog.get().error("Error opening Copilot terminal", error);
 			} else if (prompt != null && !prompt.trim().isEmpty()) {
-				// Copy prompt to clipboard for easy pasting
-				Display.getDefault().asyncExec(() -> {
-					try {
-						org.eclipse.swt.dnd.Clipboard clipboard = new org.eclipse.swt.dnd.Clipboard(Display.getDefault());
-						org.eclipse.swt.dnd.TextTransfer textTransfer = org.eclipse.swt.dnd.TextTransfer.getInstance();
-						clipboard.setContents(new Object[] { prompt }, new org.eclipse.swt.dnd.Transfer[] { textTransfer });
-						clipboard.dispose();
-					} catch (Exception e) {
-						ILog.get().error("Error copying prompt to clipboard", e);
-					}
-				});
+				// TODO we need to get the and perform
+				// terminalViewControl.pasteString(finalCommand);
 			}
 		});
 	}
