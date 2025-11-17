@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feature
+      id="io.github.laeubi.copilot.cli.feature"
+      label="GitHub Copilot CLI Feature"
+      version="1.0.0.qualifier"
+      provider-name="Christoph Läubrich">
+
+   <description>
+      Eclipse plugin integration for GitHub Copilot CLI
+   </description>
+
+   <copyright>
+      Copyright (c) 2024 Christoph Läubrich
+   </copyright>
+
+   <license url="https://www.apache.org/licenses/LICENSE-2.0">
+      Apache License 2.0
+   </license>
+
+   <plugin
+         id="io.github.laeubi.copilot.cli"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         unpack="false"/>
+
+</feature>
