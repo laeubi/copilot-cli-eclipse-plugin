@@ -29,6 +29,12 @@
             name="Open Copilot Prompt"
             description="Open Copilot CLI terminal for the current context">
       </command>
+      <command
+            categoryId="org.eclipse.terminal.view.ui.commands.category"
+            id="io.github.laeubi.copilot.cli.command.askCopilot"
+            name="Ask Copilot"
+            description="Ask Copilot from Navigator or Project Explorer">
+      </command>
    </extension>
 
    <!-- Key bindings -->
@@ -46,6 +52,41 @@
             class="io.github.laeubi.copilot.cli.handler.OpenPromptHandler"
             commandId="io.github.laeubi.copilot.cli.command.openPrompt">
       </handler>
+      <handler
+            class="io.github.laeubi.copilot.cli.handler.AskCopilotHandler"
+            commandId="io.github.laeubi.copilot.cli.command.askCopilot">
+      </handler>
+   </extension>
+   
+   <!-- Context menu contributions for Navigator and Project Explorer -->
+   <extension point="org.eclipse.ui.menus">
+      <menuContribution
+            allPopups="false"
+            locationURI="popup:org.eclipse.ui.navigator.ProjectExplorer#PopupMenu?after=additions">
+         <command
+               commandId="io.github.laeubi.copilot.cli.command.askCopilot"
+               label="Ask Copilot"
+               style="push">
+         </command>
+      </menuContribution>
+      <menuContribution
+            allPopups="false"
+            locationURI="popup:org.eclipse.jdt.ui.PackageExplorer#PopupMenu?after=additions">
+         <command
+               commandId="io.github.laeubi.copilot.cli.command.askCopilot"
+               label="Ask Copilot"
+               style="push">
+         </command>
+      </menuContribution>
+      <menuContribution
+            allPopups="false"
+            locationURI="popup:org.eclipse.ui.views.ResourceNavigator#PopupMenu?after=additions">
+         <command
+               commandId="io.github.laeubi.copilot.cli.command.askCopilot"
+               label="Ask Copilot"
+               style="push">
+         </command>
+      </menuContribution>
    </extension>
    
 </plugin>
