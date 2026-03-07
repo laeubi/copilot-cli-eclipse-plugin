@@ -19,7 +19,7 @@ An Eclipse plugin that integrates [GitHub Copilot CLI](https://github.com/github
 - **MCP Server**: Embedded [Model Context Protocol](https://modelcontextprotocol.io/) server that enables Copilot CLI's `/ide` mode to communicate with Eclipse
 - **Editor context**: Copilot CLI can read the current text selection, cursor position, and active file
 - **Diagnostics**: Copilot CLI can access workspace problems (errors, warnings) from the Problems view
-- **Diff view**: Copilot CLI can propose file changes that appear as a side-by-side diff in Eclipse's compare editor
+- **Diff view**: Copilot CLI can propose file changes that appear as a side-by-side diff in Eclipse's compare editor, with **Accept/Reject buttons** in an integrated action bar
 - **Live notifications**: Selection and diagnostics changes are pushed to the CLI in real time
 - **Auto-discovery**: The MCP server writes a lock file to `~/.copilot/ide/` so Copilot CLI automatically discovers Eclipse
 

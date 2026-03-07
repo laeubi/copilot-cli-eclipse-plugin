@@ -14,8 +14,6 @@ package io.github.laeubi.copilot.cli.mcp;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.InputStream;
-import java.lang.reflect.InvocationTargetException;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,12 +27,12 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.eclipse.compare.CompareConfiguration;
 import org.eclipse.compare.CompareEditorInput;
 import org.eclipse.compare.CompareUI;
-import org.eclipse.compare.IEditableContent;
 import org.eclipse.compare.IModificationDate;
 import org.eclipse.compare.IStreamContentAccessor;
 import org.eclipse.compare.ITypedElement;
 import org.eclipse.compare.structuremergeviewer.DiffNode;
 import org.eclipse.compare.structuremergeviewer.Differencer;
+import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
@@ -46,13 +44,23 @@ import org.eclipse.core.runtime.Platform;
 import org.eclipse.jface.text.IDocument;
 import org.eclipse.jface.text.ITextSelection;
 import org.eclipse.jface.viewers.ISelection;
+import org.eclipse.swt.SWT;
 import org.eclipse.swt.graphics.Image;
+import org.eclipse.swt.layout.GridData;
+import org.eclipse.swt.layout.GridLayout;
+import org.eclipse.swt.layout.RowLayout;
+import org.eclipse.swt.widgets.Button;
+import org.eclipse.swt.widgets.Composite;
+import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
+import org.eclipse.swt.widgets.Label;
 import org.eclipse.ui.IEditorInput;
 import org.eclipse.ui.IEditorPart;
 import org.eclipse.ui.IEditorReference;
+import org.eclipse.ui.IPartListener2;
 import org.eclipse.ui.IPathEditorInput;
 import org.eclipse.ui.IWorkbenchPage;
+import org.eclipse.ui.IWorkbenchPartReference;
 import org.eclipse.ui.IWorkbenchWindow;
 import org.eclipse.ui.PlatformUI;
 import org.eclipse.ui.texteditor.ITextEditor;
@@ -63,11 +71,13 @@ import org.eclipse.ui.texteditor.ITextEditor;
  */
 public class EclipseToolHandler implements McpToolHandler {
 
+	private static final ILog LOG = ILog.get();
+
 	private final ConcurrentHashMap<String, DiffSession> activeDiffs = new ConcurrentHashMap<>();
 
 	@Override
 	public Object callTool(String toolName, Map<String, Object> arguments) throws Exception {
-		ILog.get().info("[MCP Tool] Calling tool: " + toolName);
+		LOG.info("[MCP Tool] Calling tool: " + toolName);
 		long start = System.currentTimeMillis();
 		try {
 			Object result = switch (toolName) {
@@ -80,12 +90,13 @@ public class EclipseToolHandler implements McpToolHandler {
 			default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
 			};
 			long elapsed = System.currentTimeMillis() - start;
-			ILog.get().info("[MCP Tool] Tool '" + toolName + "' completed in " + elapsed + "ms");
+			LOG.info("[MCP Tool] Tool '" + toolName + "' completed in " + elapsed + "ms");
 			return result;
-		} catch (Exception e) {
+		} catch (Throwable t) {
 			long elapsed = System.currentTimeMillis() - start;
-			ILog.get().error("[MCP Tool] Tool '" + toolName + "' failed after " + elapsed + "ms: " + e.getMessage(), e);
-			throw e;
+			LOG.error("[MCP Tool] Tool '" + toolName + "' failed after " + elapsed + "ms: " + t.getMessage(),
+					t instanceof Exception e ? e : new RuntimeException(t));
+			throw t instanceof Exception e ? e : new RuntimeException(t);
 		}
 	}
 
@@ -103,30 +114,42 @@ public class EclipseToolHandler implements McpToolHandler {
 	// --- get_selection ---
 
 	private Map<String, Object> getSelection() throws Exception {
-		CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
+		LOG.info("[MCP Tool] getSelection: starting");
+		Map<String, Object> result = new LinkedHashMap<>();
+		Throwable[] error = { null };
 
-		Display.getDefault().asyncExec(() -> {
+		Display display = getDisplay();
+		if (display == null) {
+			LOG.warn("[MCP Tool] getSelection: display unavailable");
+			result.put("current", false);
+			return result;
+		}
+
+		LOG.info("[MCP Tool] getSelection: dispatching to UI thread via syncExec");
+		display.syncExec(() -> {
 			try {
-				Map<String, Object> result = new LinkedHashMap<>();
+				LOG.info("[MCP Tool] getSelection: running on UI thread");
 				IWorkbenchWindow window = PlatformUI.getWorkbench().getActiveWorkbenchWindow();
 				if (window == null) {
+					LOG.info("[MCP Tool] getSelection: no active workbench window");
 					result.put("current", false);
-					future.complete(result);
 					return;
 				}
 				IWorkbenchPage page = window.getActivePage();
 				if (page == null) {
+					LOG.info("[MCP Tool] getSelection: no active page");
 					result.put("current", false);
-					future.complete(result);
 					return;
 				}
 				IEditorPart editor = page.getActiveEditor();
 				if (editor == null) {
+					LOG.info("[MCP Tool] getSelection: no active editor");
 					result.put("current", false);
-					future.complete(result);
 					return;
 				}
 
+				LOG.info("[MCP Tool] getSelection: active editor=" + editor.getClass().getName()
+						+ " title=" + editor.getTitle());
 				result.put("current", true);
 
 				// Get file path
@@ -135,10 +158,15 @@ public class EclipseToolHandler implements McpToolHandler {
 					String absPath = file.getAbsolutePath();
 					result.put("filePath", absPath);
 					result.put("fileUrl", pathToFileUri(absPath));
+					LOG.info("[MCP Tool] getSelection: filePath=" + absPath);
+				} else {
+					LOG.info("[MCP Tool] getSelection: could not extract file from editor");
 				}
 
-				// Get selection
-				if (editor instanceof ITextEditor textEditor) {
+				// Get selection - try adapter pattern first for complex editors
+				ITextEditor textEditor = resolveTextEditor(editor);
+				if (textEditor != null) {
+					LOG.info("[MCP Tool] getSelection: resolved ITextEditor=" + textEditor.getClass().getName());
 					ISelection sel = textEditor.getSelectionProvider().getSelection();
 					if (sel instanceof ITextSelection textSel) {
 						result.put("text", textSel.getText() != null ? textSel.getText() : "");
@@ -153,16 +181,44 @@ public class EclipseToolHandler implements McpToolHandler {
 						selection.put("end", end);
 						selection.put("isEmpty", textSel.getLength() == 0);
 						result.put("selection", selection);
+						LOG.info("[MCP Tool] getSelection: selection captured, isEmpty=" + (textSel.getLength() == 0));
+					} else {
+						LOG.info("[MCP Tool] getSelection: selection is not ITextSelection: "
+								+ (sel == null ? "null" : sel.getClass().getName()));
 					}
+				} else {
+					LOG.info("[MCP Tool] getSelection: editor is not ITextEditor and has no adapter");
 				}
-
-				future.complete(result);
-			} catch (Exception e) {
-				future.completeExceptionally(e);
+			} catch (Throwable t) {
+				LOG.error("[MCP Tool] getSelection: error on UI thread: " + t.getMessage(),
+						t instanceof Exception e ? e : new RuntimeException(t));
+				error[0] = t;
 			}
 		});
 
-		return future.get();
+		LOG.info("[MCP Tool] getSelection: syncExec completed, result keys=" + result.keySet());
+
+		if (error[0] != null) {
+			throw error[0] instanceof Exception ex ? ex : new RuntimeException(error[0]);
+		}
+
+		return result;
+	}
+
+	/**
+	 * Resolve an ITextEditor from an editor part, using adapter pattern for
+	 * multi-page editors (e.g., PDE editors, XML editors).
+	 */
+	private ITextEditor resolveTextEditor(IEditorPart editor) {
+		if (editor instanceof ITextEditor te) {
+			return te;
+		}
+		// Try adapter pattern for multi-page editors
+		ITextEditor adapted = editor.getAdapter(ITextEditor.class);
+		if (adapted != null) {
+			return adapted;
+		}
+		return null;
 	}
 
 	private int computeCharacterOffset(ITextEditor editor, ITextSelection sel, boolean isStart) {
@@ -184,17 +240,25 @@ public class EclipseToolHandler implements McpToolHandler {
 
 	@SuppressWarnings("unchecked")
 	private List<Map<String, Object>> getDiagnostics(Map<String, Object> arguments) throws Exception {
-		CompletableFuture<List<Map<String, Object>>> future = new CompletableFuture<>();
+		LOG.info("[MCP Tool] getDiagnostics: starting");
+		List<Map<String, Object>> result = new ArrayList<>();
+		Throwable[] error = { null };
 
-		Display.getDefault().asyncExec(() -> {
+		Display display = getDisplay();
+		if (display == null) {
+			LOG.warn("[MCP Tool] getDiagnostics: display unavailable");
+			return result;
+		}
+
+		display.syncExec(() -> {
 			try {
 				String filterUri = (String) arguments.get("uri");
-				List<Map<String, Object>> result = new ArrayList<>();
+				LOG.info("[MCP Tool] getDiagnostics: filterUri=" + filterUri);
 
 				IMarker[] markers = ResourcesPlugin.getWorkspace().getRoot().findMarkers(IMarker.PROBLEM, true,
 						IResource.DEPTH_INFINITE);
+				LOG.info("[MCP Tool] getDiagnostics: found " + markers.length + " markers");
 
-				// Group by resource
 				Map<String, List<IMarker>> byResource = new LinkedHashMap<>();
 				for (IMarker marker : markers) {
 					IResource res = marker.getResource();
@@ -258,13 +322,18 @@ public class EclipseToolHandler implements McpToolHandler {
 					result.add(fileGroup);
 				}
 
-				future.complete(result);
-			} catch (Exception e) {
-				future.completeExceptionally(e);
+				LOG.info("[MCP Tool] getDiagnostics: returning " + result.size() + " file groups");
+			} catch (Throwable t) {
+				LOG.error("[MCP Tool] getDiagnostics: error: " + t.getMessage(),
+						t instanceof Exception e ? e : new RuntimeException(t));
+				error[0] = t;
 			}
 		});
 
-		return future.get();
+		if (error[0] != null) {
+			throw error[0] instanceof Exception ex ? ex : new RuntimeException(error[0]);
+		}
+		return result;
 	}
 
 	// --- open_diff ---
@@ -278,18 +347,30 @@ public class EclipseToolHandler implements McpToolHandler {
 			throw new IllegalArgumentException("Missing required arguments");
 		}
 
+		LOG.info("[MCP Tool] openDiff: originalPath=" + originalPath + " tabName=" + tabName);
+
 		// Close any existing diff with the same tab name
 		DiffSession existing = activeDiffs.get(tabName);
 		if (existing != null) {
+			LOG.info("[MCP Tool] openDiff: closing existing diff for tabName=" + tabName);
 			existing.resolve("REJECTED", "closed_via_tool");
 		}
 
 		CompletableFuture<Map<String, Object>> diffResult = new CompletableFuture<>();
-		DiffSession session = new DiffSession(tabName, diffResult);
+		DiffSession session = new DiffSession(tabName, originalPath, newContents, diffResult);
 		activeDiffs.put(tabName, session);
 
-		Display.getDefault().asyncExec(() -> {
+		Display display = getDisplay();
+		if (display == null) {
+			LOG.error("[MCP Tool] openDiff: display unavailable");
+			throw new IllegalStateException("Display not available");
+		}
+
+		LOG.info("[MCP Tool] openDiff: dispatching to UI thread");
+		display.asyncExec(() -> {
 			try {
+				LOG.info("[MCP Tool] openDiff: running on UI thread");
+
 				Path origFile = Path.of(originalPath);
 				String originalContent = Files.readString(origFile, StandardCharsets.UTF_8);
 
@@ -299,44 +380,137 @@ public class EclipseToolHandler implements McpToolHandler {
 				config.setLeftLabel("Original: " + origFile.getFileName());
 				config.setRightLabel("Proposed: " + tabName);
 
-				CompareItem left = new CompareItem(origFile.getFileName().toString(), originalContent,
-						System.currentTimeMillis());
-				CompareItem right = new CompareItem(tabName, newContents, System.currentTimeMillis());
+				CompareItem left = new CompareItem(origFile.getFileName().toString(), originalContent);
+				CompareItem right = new CompareItem(tabName, newContents);
 
 				CompareEditorInput input = new CompareEditorInput(config) {
 					@Override
 					protected Object prepareInput(IProgressMonitor monitor) {
 						return new DiffNode(Differencer.CHANGE, null, left, right);
 					}
+
+					@Override
+					public Control createContents(Composite parent) {
+						Composite container = new Composite(parent, SWT.NONE);
+						GridLayout layout = new GridLayout(1, false);
+						layout.marginHeight = 0;
+						layout.marginWidth = 0;
+						layout.verticalSpacing = 0;
+						container.setLayout(layout);
+
+						// Action bar at top with Accept/Reject buttons
+						Composite actionBar = new Composite(container, SWT.NONE);
+						actionBar.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+						RowLayout rowLayout = new RowLayout(SWT.HORIZONTAL);
+						rowLayout.marginTop = 6;
+						rowLayout.marginBottom = 6;
+						rowLayout.marginLeft = 10;
+						rowLayout.spacing = 10;
+						rowLayout.center = true;
+						actionBar.setLayout(rowLayout);
+
+						Label label = new Label(actionBar, SWT.NONE);
+						label.setText("Copilot CLI: Review proposed changes");
+
+						CompareEditorInput thisInput = this;
+
+						Button acceptBtn = new Button(actionBar, SWT.PUSH);
+						acceptBtn.setText("✓ Accept");
+						acceptBtn.addListener(SWT.Selection, e -> {
+							LOG.info("[MCP Tool] openDiff: user clicked Accept for " + tabName);
+							handleDiffAccept(session, thisInput);
+						});
+
+						Button rejectBtn = new Button(actionBar, SWT.PUSH);
+						rejectBtn.setText("✗ Reject");
+						rejectBtn.addListener(SWT.Selection, e -> {
+							LOG.info("[MCP Tool] openDiff: user clicked Reject for " + tabName);
+							session.resolve("REJECTED", "rejected_via_button");
+							activeDiffs.remove(tabName);
+							closeCompareEditor(thisInput);
+						});
+
+						Label sep = new Label(container, SWT.SEPARATOR | SWT.HORIZONTAL);
+						sep.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+
+						// Compare viewer below the action bar
+						Control compareContents = super.createContents(container);
+						compareContents.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
+
+						return container;
+					}
 				};
 				input.setTitle("Copilot Diff: " + tabName);
 
 				session.setEditorInput(input);
-				CompareUI.openCompareEditor(input);
 
-				// Listen for editor close
+				LOG.info("[MCP Tool] openDiff: opening compare editor");
+				CompareUI.openCompareEditor(input);
+				LOG.info("[MCP Tool] openDiff: compare editor opened");
+
+				// Listen for editor close (user closes diff tab directly)
 				IWorkbenchWindow window = PlatformUI.getWorkbench().getActiveWorkbenchWindow();
 				if (window != null && window.getActivePage() != null) {
-					window.getActivePage().addPartListener(new org.eclipse.ui.IPartListener2() {
+					LOG.info("[MCP Tool] openDiff: registering part listener");
+					IPartListener2 closeListener = new IPartListener2() {
 						@Override
-						public void partClosed(org.eclipse.ui.IWorkbenchPartReference partRef) {
+						public void partClosed(IWorkbenchPartReference partRef) {
 							if (partRef.getPart(false) instanceof IEditorPart editorPart) {
 								if (editorPart.getEditorInput() == input) {
+									LOG.info("[MCP Tool] openDiff: editor tab closed by user for " + tabName);
 									window.getActivePage().removePartListener(this);
 									session.resolve("REJECTED", "closed_via_tab");
+									activeDiffs.remove(tabName);
 								}
 							}
 						}
-					});
+					};
+					window.getActivePage().addPartListener(closeListener);
+				} else {
+					LOG.warn("[MCP Tool] openDiff: no active window/page for part listener");
 				}
-			} catch (Exception e) {
+
+				LOG.info("[MCP Tool] openDiff: UI setup complete, waiting for user action");
+			} catch (Throwable t) {
+				LOG.error("[MCP Tool] openDiff: error on UI thread: " + t.getMessage(),
+						t instanceof Exception e ? e : new RuntimeException(t));
 				session.resolve(null, null);
-				diffResult.completeExceptionally(e);
 			}
 		});
 
-		// Block until user acts (no timeout for open_diff)
-		return diffResult.get();
+		// Block until user accepts, rejects, or closes the diff (no timeout per spec)
+		LOG.info("[MCP Tool] openDiff: blocking on diffResult.get()");
+		Map<String, Object> result = diffResult.get();
+		LOG.info("[MCP Tool] openDiff: got result: " + result);
+		return result;
+	}
+
+	private void handleDiffAccept(DiffSession session, CompareEditorInput input) {
+		try {
+			// Write proposed changes to the original file
+			Files.writeString(Path.of(session.originalPath), session.newContents, StandardCharsets.UTF_8);
+			LOG.info("[MCP Tool] openDiff: wrote changes to " + session.originalPath);
+
+			// Refresh Eclipse workspace to pick up external file change
+			IFile[] files = ResourcesPlugin.getWorkspace().getRoot()
+					.findFilesForLocationURI(Path.of(session.originalPath).toUri());
+			for (IFile file : files) {
+				try {
+					file.refreshLocal(IResource.DEPTH_ZERO, null);
+				} catch (CoreException ce) {
+					LOG.warn("[MCP Tool] openDiff: error refreshing " + file + ": " + ce.getMessage());
+				}
+			}
+
+			session.resolve("SAVED", "accepted_via_button");
+			activeDiffs.remove(session.tabName);
+			closeCompareEditor(input);
+		} catch (Exception ex) {
+			LOG.error("[MCP Tool] openDiff: error accepting changes: " + ex.getMessage(), ex);
+			session.resolve("REJECTED", "rejected_via_button");
+			activeDiffs.remove(session.tabName);
+			closeCompareEditor(input);
+		}
 	}
 
 	// --- close_diff ---
@@ -347,8 +521,11 @@ public class EclipseToolHandler implements McpToolHandler {
 			throw new IllegalArgumentException("Missing required argument: tab_name");
 		}
 
+		LOG.info("[MCP Tool] closeDiff: tabName=" + tabName);
+
 		DiffSession session = activeDiffs.remove(tabName);
 		if (session == null) {
+			LOG.info("[MCP Tool] closeDiff: no active diff for tabName=" + tabName);
 			Map<String, Object> result = new LinkedHashMap<>();
 			result.put("success", true);
 			result.put("already_closed", true);
@@ -360,13 +537,15 @@ public class EclipseToolHandler implements McpToolHandler {
 
 		session.resolve("REJECTED", "closed_via_tool");
 
-		// Close the editor on the UI thread
-		Display.getDefault().asyncExec(() -> {
-			CompareEditorInput input = session.getEditorInput();
-			if (input != null) {
-				closeCompareEditor(input);
-			}
-		});
+		Display display = getDisplay();
+		if (display != null) {
+			display.asyncExec(() -> {
+				CompareEditorInput input = session.getEditorInput();
+				if (input != null) {
+					closeCompareEditor(input);
+				}
+			});
+		}
 
 		Map<String, Object> result = new LinkedHashMap<>();
 		result.put("success", true);
@@ -390,7 +569,7 @@ public class EclipseToolHandler implements McpToolHandler {
 				}
 			}
 		} catch (Exception e) {
-			ILog.get().warn("Error closing compare editor: " + e.getMessage());
+			LOG.warn("[MCP Tool] Error closing compare editor: " + e.getMessage());
 		}
 	}
 
@@ -406,19 +585,21 @@ public class EclipseToolHandler implements McpToolHandler {
 	 * Get the current selection data (called from notification pusher).
 	 */
 	public Map<String, Object> getCurrentSelection() {
-		CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
+		Map<String, Object> result = new LinkedHashMap<>();
 
-		Display.getDefault().asyncExec(() -> {
+		Display display = getDisplay();
+		if (display == null) {
+			return null;
+		}
+
+		display.syncExec(() -> {
 			try {
-				Map<String, Object> result = new LinkedHashMap<>();
 				IWorkbenchWindow window = PlatformUI.getWorkbench().getActiveWorkbenchWindow();
 				if (window == null || window.getActivePage() == null) {
-					future.complete(null);
 					return;
 				}
 				IEditorPart editor = window.getActivePage().getActiveEditor();
 				if (editor == null) {
-					future.complete(null);
 					return;
 				}
 
@@ -429,7 +610,8 @@ public class EclipseToolHandler implements McpToolHandler {
 					result.put("fileUrl", pathToFileUri(absPath));
 				}
 
-				if (editor instanceof ITextEditor textEditor) {
+				ITextEditor textEditor = resolveTextEditor(editor);
+				if (textEditor != null) {
 					ISelection sel = textEditor.getSelectionProvider().getSelection();
 					if (sel instanceof ITextSelection textSel) {
 						result.put("text", textSel.getText() != null ? textSel.getText() : "");
@@ -446,31 +628,28 @@ public class EclipseToolHandler implements McpToolHandler {
 						result.put("selection", selection);
 					}
 				}
-
-				future.complete(result);
-			} catch (Exception e) {
-				future.complete(null);
+			} catch (Throwable t) {
+				// best effort for notifications
 			}
 		});
 
-		try {
-			return future.get();
-		} catch (Exception e) {
-			return null;
-		}
-	}
-
-	/**
-	 * Resolve the diff with user's action: accept saves the file, reject discards.
-	 */
-	public void acceptDiff(String tabName) {
-		DiffSession session = activeDiffs.get(tabName);
-		if (session != null) {
-			session.resolve("SAVED", "accepted_via_button");
-		}
+		return result.isEmpty() ? null : result;
 	}
 
 	// --- Utilities ---
+
+	private Display getDisplay() {
+		try {
+			Display display = PlatformUI.getWorkbench().getDisplay();
+			if (display != null && !display.isDisposed()) {
+				return display;
+			}
+		} catch (Throwable t) {
+			// fallback
+		}
+		Display display = Display.getDefault();
+		return (display != null && !display.isDisposed()) ? display : null;
+	}
 
 	private File getFileFromEditor(IEditorPart editor) {
 		IEditorInput input = editor.getEditorInput();
@@ -482,7 +661,7 @@ public class EclipseToolHandler implements McpToolHandler {
 		}
 		var file = input.getAdapter(org.eclipse.core.resources.IFile.class);
 		if (file != null) {
-			var location = file.getLocation();
+			var location = ((IFile) file).getLocation();
 			if (location != null) {
 				return location.toFile();
 			}
@@ -525,12 +704,10 @@ public class EclipseToolHandler implements McpToolHandler {
 	private static class CompareItem implements ITypedElement, IStreamContentAccessor, IModificationDate {
 		private final String name;
 		private final String content;
-		private final long modificationDate;
 
-		CompareItem(String name, String content, long modificationDate) {
+		CompareItem(String name, String content) {
 			this.name = name;
 			this.content = content;
-			this.modificationDate = modificationDate;
 		}
 
 		@Override
@@ -556,19 +733,24 @@ public class EclipseToolHandler implements McpToolHandler {
 
 		@Override
 		public long getModificationDate() {
-			return modificationDate;
+			return 0;
 		}
 	}
 
 	// --- Diff session tracking ---
 
 	private static class DiffSession {
-		private final String tabName;
+		final String tabName;
+		final String originalPath;
+		final String newContents;
 		private final CompletableFuture<Map<String, Object>> future;
 		private volatile CompareEditorInput editorInput;
 
-		DiffSession(String tabName, CompletableFuture<Map<String, Object>> future) {
+		DiffSession(String tabName, String originalPath, String newContents,
+				CompletableFuture<Map<String, Object>> future) {
 			this.tabName = tabName;
+			this.originalPath = originalPath;
+			this.newContents = newContents;
 			this.future = future;
 		}
 
@@ -581,6 +763,8 @@ public class EclipseToolHandler implements McpToolHandler {
 		}
 
 		void resolve(String resultValue, String trigger) {
+			LOG.info("[MCP Tool] DiffSession.resolve: tabName=" + tabName + " result=" + resultValue
+					+ " trigger=" + trigger);
 			Map<String, Object> result = new LinkedHashMap<>();
 			result.put("success", resultValue != null);
 			result.put("result", resultValue != null ? resultValue : "REJECTED");
@@ -590,7 +774,8 @@ public class EclipseToolHandler implements McpToolHandler {
 					? "User " + (resultValue.equals("SAVED") ? "accepted" : "rejected") + " changes for " + tabName
 					: null);
 			result.put("error", null);
-			future.complete(result);
+			boolean completed = future.complete(result);
+			LOG.info("[MCP Tool] DiffSession.resolve: future completed=" + completed);
 		}
 	}
 }
