@@ -7,11 +7,9 @@ An Eclipse plugin that integrates [GitHub Copilot CLI](https://github.com/github
 ## Features
 
 ### Terminal Integration
-- **Prompt dialog with smart context detection**: Ask questions before opening the terminal
-- **Text selection to file reference**: Automatically creates references like `See file.java[Line 5-10]` from selected text
 - **Context-aware Copilot Terminal**: Open a Copilot CLI terminal for the current file's Git repository
 - **"Ask Copilot" context menu**: Right-click in Project Explorer or Navigator to ask Copilot about any resource
-- **Key binding (Ctrl+Alt+C)**: Quickly open Copilot terminal with keyboard shortcut and prompt dialog
+- **Key binding (Ctrl+Alt+C)**: Quickly open Copilot terminal with keyboard shortcut
 - Automatic Git repository detection for context-aware terminal sessions
 - Terminal reuse for the same repository to avoid clutter
 
@@ -36,93 +34,19 @@ An Eclipse plugin that integrates [GitHub Copilot CLI](https://github.com/github
 
 1. In Eclipse, go to **Help** → **Install New Software...**
 2. Click **Add...** to add a new repository
-3. Enter the update site URL (to be published)
+3. Enter the update site URL `https://laeubi.github.io/copilot-cli-eclipse-plugin` - **Important** The URL can *not* be browsed with a regular browser! It still works, just copy and paste into the dialog!
 4. Select "GitHub Copilot CLI Feature"
 5. Click **Next** and follow the installation wizard
 6. Restart Eclipse when prompted
 
-### From Release
-
-1. Download the latest release ZIP from the [Releases](https://github.com/laeubi/copilot-cli-eclipse-plugin/releases) page
-2. In Eclipse, go to **Help** → **Install New Software...**
-3. Click **Add...** → **Archive...**
-4. Select the downloaded ZIP file
-5. Follow the installation wizard
-
 ## Usage
-
-### Opening a Copilot Terminal with Prompt Dialog
 
 The plugin provides multiple ways to open a Copilot CLI terminal:
 
-#### Using the Keyboard Shortcut
-
-Press **Ctrl+Alt+C** (or **Cmd+Alt+C** on macOS) to:
-
-1. **Show a prompt dialog** where you can enter your question or request for GitHub Copilot
-2. **Automatically pre-fill** the dialog with file context if you have text selected in the editor
-   - Example: `See src/main/Example.java[Line 6-9]` when you have lines 6-9 selected
-   - This helps provide Copilot with context about the code you're asking about
-3. **Open the Copilot terminal** in the appropriate directory (Git repository root if detected)
-4. **Copy the prompt to clipboard** (if provided) so you can paste it directly into the terminal
-
-If you leave the prompt empty, the terminal simply opens without any prompt, just like before.
-
-The plugin will:
-- Detect the file's location if you have a file open in the editor
-- Search upward for a Git repository root (a directory containing `.git`)
-- Open a Copilot terminal with the repository root as the working directory
-- If no editor is active, it will use the currently selected item in the Project Explorer
-- If a terminal already exists for that Git repository, it will reuse the existing terminal instead of creating a new one
-
-#### Using the Context Menu
-
-You can also right-click on any item in the **Project Explorer**, **Package Explorer**, or **Navigator** and select **"Ask Copilot"** from the context menu:
-
-1. Right-click on a project, folder, or file
-2. Select **"Ask Copilot"** from the menu
-3. Enter your prompt in the dialog
-4. The terminal opens in the Git repository root for that item (or its parent directory if no Git repo is found)
-5. The prompt is copied to the clipboard for easy pasting
-
-#### From the Terminal View
-
-You can also manually launch a Copilot terminal from Eclipse's Terminal view using the standard terminal launcher menu.
-
-## Implementation Status
-
-### Completed Features
-
-- ✅ Terminal connector for GitHub Copilot CLI
-- ✅ Terminal launcher delegate
-- ✅ Context-aware terminal opening via Ctrl+Alt+C
-- ✅ **Prompt dialog with text selection detection**
-- ✅ **File reference with line numbers pre-filled in dialog**
-- ✅ **"Ask Copilot" context menu in Navigator/Explorer views**
-- ✅ Git repository detection
-- ✅ Terminal reuse for the same repository
-- ✅ Integration with Eclipse editor and Project Explorer
-- ✅ **MCP server for Copilot CLI `/ide` protocol**
-- ✅ **Editor selection and cursor tracking**
-- ✅ **Workspace diagnostics (problems/markers) integration**
-- ✅ **Diff view for proposed file changes**
-- ✅ **Real-time SSE push notifications**
-- ✅ **Auto-discovery via lock files**
-
-### Technical Details
-
-The plugin uses the Eclipse Terminal framework to provide:
-- Process-based terminal connector running the `copilot` CLI command
-- Command handler that extracts context from the active editor or selection
-- Automatic detection of Git repository roots by searching for `.git` directories
-- Working directory configuration based on detected context
-
-The plugin also embeds an MCP (Model Context Protocol) server that:
-- Listens on a Unix domain socket for Copilot CLI connections
-- Implements Streamable HTTP transport with JSON-RPC 2.0
-- Exposes 6 tools: `get_vscode_info`, `get_selection`, `get_diagnostics`, `open_diff`, `close_diff`, `update_session_name`
-- Pushes `selection_changed` and `diagnostics_changed` notifications via SSE
-- Writes a lock file to `~/.copilot/ide/` for automatic CLI discovery
+- Press **Ctrl+Alt+C** (or **Cmd+Alt+C** on macOS) to directly open a copilot-cli terminal view
+- You can also right-click on any item in the **Project Explorer**, **Package Explorer**, or **Navigator** and select **"Ask Copilot"** from the context menu:
+- You can also manually launch a Copilot terminal from Eclipse's Terminal view using the standard terminal launcher menu.
+- You can connect to the IDE project using `/ide` command in any copilot-cli session!
 
 ## Configuration
 
@@ -169,9 +93,8 @@ If the command is not found, please install the GitHub Copilot CLI following the
 
 ### Importing into Eclipse
 
-1. Ensure you have **Eclipse IDE for Eclipse Committers** or **Eclipse IDE for Java and DSL Developers** installed
-2. Install **Maven Integration for Eclipse (m2e)** if not already installed
-3. Import the project:
+1. Ensure you have **Eclipse IDE for RCP/Plugin Developers** installed
+2. Import the project:
    - **File** → **Import** → **Maven** → **Existing Maven Projects**
    - Select the cloned repository root directory
    - Import all projects
@@ -214,6 +137,7 @@ This project is licensed under the Eclipse Public License 2.0 - see the [LICENSE
 ## Acknowledgments
 
 - [GitHub Copilot CLI](https://github.com/github/copilot-cli) - The command-line tool this plugin integrates
+- [CopilotCliIde](https://github.com/sailro/CopilotCliIde) - Visual Studio Integration and inital reverse engeneering of the [protocol](https://github.com/sailro/CopilotCliIde/blob/main/doc/protocol.md)
 - Eclipse Foundation - For the Eclipse platform and Tycho build system
 
 ## Support
