@@ -5,7 +5,7 @@ Bundle-SymbolicName: io.github.laeubi.copilot.cli;singleton:=true
 Bundle-Version: 1.0.0.qualifier
 Bundle-Activator: io.github.laeubi.copilot.cli.Activator
 Bundle-Vendor: Christoph Läubrich
-Bundle-RequiredExecutionEnvironment: JavaSE-17
+Bundle-RequiredExecutionEnvironment: JavaSE-21
 Require-Bundle: org.eclipse.ui,
  org.eclipse.core.runtime,
  org.eclipse.core.resources,
@@ -15,7 +15,8 @@ Require-Bundle: org.eclipse.ui,
  org.eclipse.terminal.view.ui;bundle-version="[1.0.0,2.0.0)",
  org.eclipse.jface.text,
  org.eclipse.ui.editors,
- org.eclipse.ui.workbench.texteditor
+ org.eclipse.ui.workbench.texteditor,
+ org.eclipse.compare
 Import-Package: org.eclipse.cdt.utils.pty;mandatory:=native
 Bundle-ActivationPolicy: lazy
 Automatic-Module-Name: io.github.laeubi.copilot.cli

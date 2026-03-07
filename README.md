@@ -6,22 +6,27 @@ An Eclipse plugin that integrates [GitHub Copilot CLI](https://github.com/github
 
 ## Features
 
-- Integration of GitHub Copilot CLI capabilities into Eclipse
-- Quick access to AI-powered terminal commands
+### Terminal Integration
 - **Prompt dialog with smart context detection**: Ask questions before opening the terminal
 - **Text selection to file reference**: Automatically creates references like `See file.java[Line 5-10]` from selected text
 - **Context-aware Copilot Terminal**: Open a Copilot CLI terminal for the current file's Git repository
 - **"Ask Copilot" context menu**: Right-click in Project Explorer or Navigator to ask Copilot about any resource
-- **Key binding (Ctrl+Shift+P)**: Quickly open Copilot terminal with keyboard shortcut and prompt dialog
-- **Automatic clipboard copy**: Prompts are copied to clipboard for easy pasting into the terminal
-- Seamless workflow within the Eclipse IDE
+- **Key binding (Ctrl+Alt+C)**: Quickly open Copilot terminal with keyboard shortcut and prompt dialog
 - Automatic Git repository detection for context-aware terminal sessions
 - Terminal reuse for the same repository to avoid clutter
 
+### IDE Integration via `/ide` Protocol
+- **MCP Server**: Embedded [Model Context Protocol](https://modelcontextprotocol.io/) server that enables Copilot CLI's `/ide` mode to communicate with Eclipse
+- **Editor context**: Copilot CLI can read the current text selection, cursor position, and active file
+- **Diagnostics**: Copilot CLI can access workspace problems (errors, warnings) from the Problems view
+- **Diff view**: Copilot CLI can propose file changes that appear as a side-by-side diff in Eclipse's compare editor
+- **Live notifications**: Selection and diagnostics changes are pushed to the CLI in real time
+- **Auto-discovery**: The MCP server writes a lock file to `~/.copilot/ide/` so Copilot CLI automatically discovers Eclipse
+
 ## Prerequisites
 
-- Eclipse IDE (2024-09 or later recommended)
-- Java 17 or higher
+- Eclipse IDE (2025-03 or later recommended)
+- Java 21 or higher
 - [GitHub Copilot CLI](https://github.com/github/copilot-cli) installed and configured
 - Active GitHub Copilot subscription
 
@@ -90,14 +95,19 @@ You can also manually launch a Copilot terminal from Eclipse's Terminal view usi
 
 - ✅ Terminal connector for GitHub Copilot CLI
 - ✅ Terminal launcher delegate
-- ✅ Context-aware terminal opening via Ctrl+Shift+P
+- ✅ Context-aware terminal opening via Ctrl+Alt+C
 - ✅ **Prompt dialog with text selection detection**
 - ✅ **File reference with line numbers pre-filled in dialog**
 - ✅ **"Ask Copilot" context menu in Navigator/Explorer views**
-- ✅ **Automatic prompt clipboard copying for easy pasting**
 - ✅ Git repository detection
 - ✅ Terminal reuse for the same repository
 - ✅ Integration with Eclipse editor and Project Explorer
+- ✅ **MCP server for Copilot CLI `/ide` protocol**
+- ✅ **Editor selection and cursor tracking**
+- ✅ **Workspace diagnostics (problems/markers) integration**
+- ✅ **Diff view for proposed file changes**
+- ✅ **Real-time SSE push notifications**
+- ✅ **Auto-discovery via lock files**
 
 ### Technical Details
 
@@ -106,6 +116,13 @@ The plugin uses the Eclipse Terminal framework to provide:
 - Command handler that extracts context from the active editor or selection
 - Automatic detection of Git repository roots by searching for `.git` directories
 - Working directory configuration based on detected context
+
+The plugin also embeds an MCP (Model Context Protocol) server that:
+- Listens on a Unix domain socket for Copilot CLI connections
+- Implements Streamable HTTP transport with JSON-RPC 2.0
+- Exposes 6 tools: `get_vscode_info`, `get_selection`, `get_diagnostics`, `open_diff`, `close_diff`, `update_session_name`
+- Pushes `selection_changed` and `diagnostics_changed` notifications via SSE
+- Writes a lock file to `~/.copilot/ide/` for automatic CLI discovery
 
 ## Configuration
 
@@ -123,7 +140,7 @@ If the command is not found, please install the GitHub Copilot CLI following the
 ### Prerequisites for Building
 
 - Maven 3.9.x or higher
-- JDK 17 or higher
+- JDK 21 or higher
 
 ### Build Instructions
 
