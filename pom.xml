@@ -26,6 +26,15 @@
 		<module>releng/io.github.laeubi.copilot.cli.repository</module>
 	</modules>
 
+	<profiles>
+		<profile>
+			<id>test-tool</id>
+			<modules>
+				<module>ide-cli-test</module>
+			</modules>
+		</profile>
+	</profiles>
+
 	<repositories>
 		<repository>
 			<id>eclipse-${eclipse.version}</id>
