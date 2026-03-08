@@ -24,8 +24,8 @@ The plugin has Java classes organized into four packages under `io.github.laeubi
 | `handler` | `OpenPromptHandler`, `AskCopilotHandler` | Eclipse command handlers (extend `AbstractHandler`) |
 | `connector` | `CopilotCliConnector`, `CopilotCliSettingsPage` | Terminal connector (extends `ProcessConnector`) |
 | `launcher` | `CopilotCliLauncherDelegate`, `CopilotCliConfigurationPanel` | Terminal launcher delegate (extends `AbstractLauncherDelegate`) |
-| `mcp` | `McpServer`, `McpToolHandler`, `EclipseToolHandler`, `McpLifecycleManager`, `LockFileManager`, `NotificationPusher`, `Json` | MCP server for Copilot CLI `/ide` integration |
-| _(root)_ | `Activator` | Bundle lifecycle — starts/stops MCP server |
+| `mcp` | `McpServer`, `McpToolHandler`, `EclipseToolHandler`, `McpLifecycleManager`, `LockFileManager`, `NotificationPusher`, `Json`, `WorkspaceFolderStyle`, `CopilotCliPreferencePage` | MCP server for Copilot CLI `/ide` integration |
+| _(root)_ | `Activator` | Bundle lifecycle — provides shared preference store |
 
 ### Terminal integration
 
@@ -47,9 +47,12 @@ The embedded MCP server implements the [Copilot CLI `/ide` protocol](https://git
    - `close_diff` — closes compare editor by tab name
    - `update_session_name` — fire-and-forget
 3. **`NotificationPusher`** — pushes `selection_changed` and `diagnostics_changed` SSE events with 200ms debounce
-4. **`LockFileManager`** — writes/deletes `~/.copilot/ide/{uuid}.lock` for CLI discovery
-5. **`McpLifecycleManager`** — orchestrates startup/shutdown from `Activator`
-6. **`Json`** — minimal JSON parser/serializer (no external dependencies)
+4. **`LockFileManager`** — writes/deletes `~/.copilot/ide/{uuid}.lock` for CLI discovery; implements `IResourceChangeListener` to rewrite the lock file when projects are added, removed, opened or closed
+5. **`McpLifecycleManager`** — DS component that orchestrates startup/shutdown; registers `IPropertyChangeListener` to rewrite the lock file when the workspace-folder style preference changes
+6. **`WorkspaceFolderStyle`** — constants for the four workspace-folder styles: `WORKSPACE`, `PROJECTS` (default), `HIERARCHICAL`, `GIT_ROOTS`
+7. **`CopilotCliPreferencePage`** — Eclipse preference page under *Preferences → GitHub Copilot CLI* to choose the workspace-folder style
+8. **`Activator`** — `AbstractUIPlugin` providing the shared preference store and default preference initialisation
+9. **`Json`** — minimal JSON parser/serializer (no external dependencies)
 
 ### Key flow
 

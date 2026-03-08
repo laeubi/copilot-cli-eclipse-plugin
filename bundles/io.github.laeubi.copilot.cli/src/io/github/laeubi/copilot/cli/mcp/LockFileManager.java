@@ -16,17 +16,22 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResourceChangeEvent;
 import org.eclipse.core.resources.IResourceChangeListener;
+import org.eclipse.core.resources.IResourceDelta;
 import org.eclipse.core.runtime.ILog;
+import org.eclipse.jface.util.IPropertyChangeListener;
+import org.eclipse.jface.util.PropertyChangeEvent;
 
 /**
  * Manages lock files in {@code ~/.copilot/ide/} for IDE discovery by the
  * Copilot CLI.
  */
-public class LockFileManager implements IResourceChangeListener {
+public class LockFileManager implements IResourceChangeListener, IPropertyChangeListener {
 
 	private static final Path LOCK_DIR = Path.of(System.getProperty("user.home"), ".copilot", "ide");
 
@@ -40,13 +45,14 @@ public class LockFileManager implements IResourceChangeListener {
 
 	private final String ideName;
 
-	private EclipseToolHandler toolHandler;
+	private final EclipseToolHandler toolHandler;
 
 	static {
 		cleanStaleLockFiles();
 	}
 
-	public LockFileManager(String ideName, String uuid, String nonce, Path socketPath, EclipseToolHandler toolHandler) {
+	public LockFileManager(String ideName, String uuid, String nonce, Path socketPath,
+			EclipseToolHandler toolHandler) {
 		this.ideName = ideName;
 		this.uuid = uuid;
 		this.nonce = nonce;
@@ -57,12 +63,6 @@ public class LockFileManager implements IResourceChangeListener {
 
 	/**
 	 * Write a lock file so Copilot CLI can discover this IDE instance.
-	 *
-	 * @param uuid             unique session identifier
-	 * @param socketPath       path to the Unix domain socket
-	 * @param nonce            authentication nonce
-	 * @param ideName          human-readable IDE name
-	 * @param workspaceFolders list of open workspace folder paths
 	 */
 	public void writeLockFile() throws IOException {
 		Files.createDirectories(LOCK_DIR);
@@ -78,9 +78,10 @@ public class LockFileManager implements IResourceChangeListener {
 		lock.put("pid", ProcessHandle.current().pid());
 		lock.put("ideName", ideName);
 		lock.put("timestamp", System.currentTimeMillis());
-		lock.put("workspaceFolders", toolHandler.getWorkspaceFolders());
+		List<String> folders = toolHandler.getWorkspaceFolders();
+		ILog.get().info("[MCP Lifecycle] Workspace folders: " + folders);
+		lock.put("workspaceFolders", folders);
 		lock.put("isTrusted", true);
-
 
 		Files.writeString(lockFilePath, Json.serialize(lock), StandardCharsets.UTF_8);
 		ILog.get().info("MCP lock file written: " + lockFilePath);
@@ -132,7 +133,48 @@ public class LockFileManager implements IResourceChangeListener {
 
 	@Override
 	public void resourceChanged(IResourceChangeEvent event) {
-		// TODO Auto-generated method stub
+		if (event.getType() != IResourceChangeEvent.POST_CHANGE) {
+			return;
+		}
+		IResourceDelta delta = event.getDelta();
+		if (delta == null) {
+			return;
+		}
+		// Check if any top-level project was added, removed, opened, or closed.
+		boolean projectsChanged = false;
+		for (IResourceDelta child : delta.getAffectedChildren()) {
+			if (child.getResource() instanceof IProject) {
+				int kind = child.getKind();
+				int flags = child.getFlags();
+				if (kind == IResourceDelta.ADDED || kind == IResourceDelta.REMOVED
+						|| (flags & IResourceDelta.OPEN) != 0) {
+					projectsChanged = true;
+					break;
+				}
+			}
+		}
+		if (projectsChanged) {
+			ILog.get().info("[MCP Lifecycle] Project set changed, rewriting lock file");
+			try {
+				writeLockFile();
+			} catch (IOException e) {
+				ILog.get().warn("[MCP Lifecycle] Failed to rewrite lock file after project change: " + e.getMessage());
+			}
+		}
+	}
 
+	@Override
+	public void propertyChange(PropertyChangeEvent event) {
+		if (WorkspaceFolderStyle.PREF_KEY.equals(event.getProperty())) {
+			ILog.get().info("[MCP Lifecycle] Workspace folder style changed to: " + event.getNewValue()
+					+ " – rewriting lock file");
+			try {
+				writeLockFile();
+			} catch (IOException e) {
+				ILog.get().warn(
+						"[MCP Lifecycle] Failed to rewrite lock file after preference change: " + e.getMessage());
+			}
+		}
 	}
 }
+

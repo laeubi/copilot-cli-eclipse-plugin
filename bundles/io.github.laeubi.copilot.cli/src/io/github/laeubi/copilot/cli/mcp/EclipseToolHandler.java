@@ -683,25 +683,84 @@ public class EclipseToolHandler implements McpToolHandler {
 	}
 
 	/**
-	 * Get workspace folder paths for the lock file.
+	 * Get workspace folder paths for the lock file. The style is read from the
+	 * plugin preference store.
 	 */
 	public List<String> getWorkspaceFolders() {
+		WorkspaceFolderStyle style = WorkspaceFolderStyle.fromPreference(
+				io.github.laeubi.copilot.cli.Activator.getDefault() != null
+						? io.github.laeubi.copilot.cli.Activator.getDefault().getPreferenceStore()
+						: null);
 		List<String> folders = new ArrayList<>();
 		try {
 			IProject[] projects = workspace.getRoot().getProjects();
-			for (IProject project : projects) {
-				if (project.isOpen() && project.getLocation() != null) {
-					folders.add(project.getLocation().toOSString());
+			List<IProject> open = new ArrayList<>();
+			for (IProject p : projects) {
+				if (p.isOpen() && p.getLocation() != null) {
+					open.add(p);
 				}
 			}
+
+			switch (style) {
+			case WORKSPACE -> {
+				// intentionally left empty – fallback below adds workspace root
+			}
+			case HIERARCHICAL -> {
+				// Only include root projects: those whose location is NOT a
+				// sub-path of any other open project's location.
+				for (IProject p : open) {
+					org.eclipse.core.runtime.IPath loc = p.getLocation();
+					boolean nested = false;
+					for (IProject other : open) {
+						if (other == p) continue;
+						org.eclipse.core.runtime.IPath otherLoc = other.getLocation();
+						if (otherLoc != null && otherLoc.isPrefixOf(loc)) {
+							nested = true;
+							break;
+						}
+					}
+					if (!nested) {
+						folders.add(loc.toOSString());
+					}
+				}
+			}
+			case GIT_ROOTS -> {
+				// Collect unique git roots across all open projects.
+				java.util.LinkedHashSet<String> roots = new java.util.LinkedHashSet<>();
+				for (IProject p : open) {
+					java.io.File dir = p.getLocation().toFile();
+					java.io.File gitRoot = findGitRoot(dir);
+					roots.add(gitRoot != null ? gitRoot.getAbsolutePath() : dir.getAbsolutePath());
+				}
+				folders.addAll(roots);
+			}
+			default -> {
+				// PROJECTS: one entry per open project
+				for (IProject p : open) {
+					folders.add(p.getLocation().toOSString());
+				}
+			}
+			}
 		} catch (Exception e) {
-			// fallback
+			LOG.warn("[MCP Tool] Error computing workspace folders: " + e.getMessage());
 		}
 		if (folders.isEmpty()) {
-			String ws = workspace.getRoot().getLocation().toOSString();
-			folders.add(ws);
+			// Final fallback: workspace root
+			folders.add(workspace.getRoot().getLocation().toOSString());
 		}
 		return folders;
+	}
+
+	/** Find the Git repository root by walking up for a {@code .git} directory. */
+	private static java.io.File findGitRoot(java.io.File dir) {
+		java.io.File current = dir.isDirectory() ? dir : dir.getParentFile();
+		while (current != null) {
+			if (new java.io.File(current, ".git").exists()) {
+				return current;
+			}
+			current = current.getParentFile();
+		}
+		return null;
 	}
 
 	// --- Compare editor helpers ---

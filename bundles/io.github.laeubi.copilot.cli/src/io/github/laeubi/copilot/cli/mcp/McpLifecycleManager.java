@@ -13,15 +13,17 @@ package io.github.laeubi.copilot.cli.mcp;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.UUID;
 
 import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.runtime.ILog;
+import org.eclipse.jface.preference.IPreferenceStore;
 import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.Deactivate;
 import org.osgi.service.component.annotations.Reference;
+
+import io.github.laeubi.copilot.cli.Activator;
 
 /**
  * Manages the MCP server lifecycle: starts the Unix domain socket server,
@@ -36,8 +38,7 @@ public class McpLifecycleManager {
 	private final EclipseToolHandler toolHandler;
 	private final NotificationPusher notificationPusher;
 	private final McpServer server;
-
-	private IWorkspace workspace;
+	private final IWorkspace workspace;
 
 	@Activate
 	public McpLifecycleManager(@Reference IWorkspace workspace) throws IOException {
@@ -48,18 +49,18 @@ public class McpLifecycleManager {
 		this.server = new McpServer(socketPath, nonce, toolHandler);
 		this.notificationPusher = new NotificationPusher(server, toolHandler);
 		this.lockFileManager = new LockFileManager("Eclipse IDE", uuid, nonce, socketPath, toolHandler);
+
+		ILog.get().info("[MCP Lifecycle] Starting MCP server infrastructure...");
 		ILog.get().info("[MCP Lifecycle] UUID=" + uuid + " socketPath=" + socketPath);
 		try {
 			server.start();
 			workspace.addResourceChangeListener(lockFileManager);
-			// Write lock file for CLI discovery
-			List<String> workspaceFolders = toolHandler.getWorkspaceFolders();
-			ILog.get().info("[MCP Lifecycle] Workspace folders: " + workspaceFolders);
+			IPreferenceStore prefs = getPreferenceStore();
+			if (prefs != null) {
+				prefs.addPropertyChangeListener(lockFileManager);
+			}
 			lockFileManager.writeLockFile();
-
-			// Start push notifications
 			notificationPusher.start();
-
 			ILog.get().info("[MCP Lifecycle] MCP server started successfully for Copilot CLI /ide integration");
 		} catch (IOException e) {
 			ILog.get().error("[MCP Lifecycle] Failed to start MCP server", e);
@@ -71,6 +72,10 @@ public class McpLifecycleManager {
 	@Deactivate
 	public void stop() {
 		ILog.get().info("[MCP Lifecycle] Stopping MCP server...");
+		IPreferenceStore prefs = getPreferenceStore();
+		if (prefs != null) {
+			prefs.removePropertyChangeListener(lockFileManager);
+		}
 		workspace.removeResourceChangeListener(lockFileManager);
 		lockFileManager.deleteLockFile();
 		notificationPusher.stop();
@@ -78,4 +83,9 @@ public class McpLifecycleManager {
 		ILog.get().info("[MCP Lifecycle] MCP server stopped");
 	}
 
+	private static IPreferenceStore getPreferenceStore() {
+		Activator activator = Activator.getDefault();
+		return activator != null ? activator.getPreferenceStore() : null;
+	}
 }
+

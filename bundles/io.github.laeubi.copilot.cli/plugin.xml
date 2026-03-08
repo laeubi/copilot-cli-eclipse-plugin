@@ -110,5 +110,13 @@
          </command>
       </menuContribution>
    </extension>
-   
+   <!-- Preference page for Copilot CLI integration settings -->
+   <extension point="org.eclipse.ui.preferencePages">
+      <page
+            class="io.github.laeubi.copilot.cli.mcp.CopilotCliPreferencePage"
+            id="io.github.laeubi.copilot.cli.preferences"
+            name="GitHub Copilot CLI">
+      </page>
+   </extension>
+
 </plugin>
