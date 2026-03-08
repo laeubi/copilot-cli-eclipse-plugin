@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scr:component xmlns:scr="http://www.osgi.org/xmlns/scr/v1.4.0" deactivate="stop" init="1" name="io.github.laeubi.copilot.cli.mcp.McpLifecycleManager">
+   <reference cardinality="1..1" interface="org.eclipse.core.resources.IWorkspace" name="workspace" parameter="0"/>
+   <implementation class="io.github.laeubi.copilot.cli.mcp.McpLifecycleManager"/>
+</scr:component>

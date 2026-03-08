@@ -36,7 +36,7 @@ import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
-import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IProgressMonitor;
@@ -74,6 +74,12 @@ public class EclipseToolHandler implements McpToolHandler {
 	private static final ILog LOG = ILog.get();
 
 	private final ConcurrentHashMap<String, DiffSession> activeDiffs = new ConcurrentHashMap<>();
+
+	private IWorkspace workspace;
+
+	public EclipseToolHandler(IWorkspace workspace) {
+		this.workspace = workspace;
+	}
 
 	@Override
 	public Object callTool(String toolName, Map<String, Object> arguments) throws Exception {
@@ -238,7 +244,6 @@ public class EclipseToolHandler implements McpToolHandler {
 
 	// --- get_diagnostics ---
 
-	@SuppressWarnings("unchecked")
 	private List<Map<String, Object>> getDiagnostics(Map<String, Object> arguments) throws Exception {
 		LOG.info("[MCP Tool] getDiagnostics: starting");
 		List<Map<String, Object>> result = new ArrayList<>();
@@ -255,7 +260,7 @@ public class EclipseToolHandler implements McpToolHandler {
 				String filterUri = (String) arguments.get("uri");
 				LOG.info("[MCP Tool] getDiagnostics: filterUri=" + filterUri);
 
-				IMarker[] markers = ResourcesPlugin.getWorkspace().getRoot().findMarkers(IMarker.PROBLEM, true,
+				IMarker[] markers = workspace.getRoot().findMarkers(IMarker.PROBLEM, true,
 						IResource.DEPTH_INFINITE);
 				LOG.info("[MCP Tool] getDiagnostics: found " + markers.length + " markers");
 
@@ -492,7 +497,7 @@ public class EclipseToolHandler implements McpToolHandler {
 			LOG.info("[MCP Tool] openDiff: wrote changes to " + session.originalPath);
 
 			// Refresh Eclipse workspace to pick up external file change
-			IFile[] files = ResourcesPlugin.getWorkspace().getRoot()
+			IFile[] files = workspace.getRoot()
 					.findFilesForLocationURI(Path.of(session.originalPath).toUri());
 			for (IFile file : files) {
 				try {
@@ -661,7 +666,7 @@ public class EclipseToolHandler implements McpToolHandler {
 		}
 		var file = input.getAdapter(org.eclipse.core.resources.IFile.class);
 		if (file != null) {
-			var location = ((IFile) file).getLocation();
+			var location = file.getLocation();
 			if (location != null) {
 				return location.toFile();
 			}
@@ -680,10 +685,10 @@ public class EclipseToolHandler implements McpToolHandler {
 	/**
 	 * Get workspace folder paths for the lock file.
 	 */
-	public static List<String> getWorkspaceFolders() {
+	public List<String> getWorkspaceFolders() {
 		List<String> folders = new ArrayList<>();
 		try {
-			IProject[] projects = ResourcesPlugin.getWorkspace().getRoot().getProjects();
+			IProject[] projects = workspace.getRoot().getProjects();
 			for (IProject project : projects) {
 				if (project.isOpen() && project.getLocation() != null) {
 					folders.add(project.getLocation().toOSString());
@@ -693,7 +698,7 @@ public class EclipseToolHandler implements McpToolHandler {
 			// fallback
 		}
 		if (folders.isEmpty()) {
-			String ws = ResourcesPlugin.getWorkspace().getRoot().getLocation().toOSString();
+			String ws = workspace.getRoot().getLocation().toOSString();
 			folders.add(ws);
 		}
 		return folders;

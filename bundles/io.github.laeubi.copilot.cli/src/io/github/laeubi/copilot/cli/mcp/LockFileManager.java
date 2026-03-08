@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2025 Christoph Läubrich and others.
+ * Copyright (c) 2026 Christoph Läubrich and others.
  * This program and the accompanying materials are made available under the terms
  * of the Eclipse Public License 2.0 which accompanies this distribution, and is
  * available at https://www.eclipse.org/legal/epl-2.0/
@@ -16,20 +16,44 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
+import org.eclipse.core.resources.IResourceChangeEvent;
+import org.eclipse.core.resources.IResourceChangeListener;
 import org.eclipse.core.runtime.ILog;
 
 /**
  * Manages lock files in {@code ~/.copilot/ide/} for IDE discovery by the
  * Copilot CLI.
  */
-public class LockFileManager {
+public class LockFileManager implements IResourceChangeListener {
 
 	private static final Path LOCK_DIR = Path.of(System.getProperty("user.home"), ".copilot", "ide");
 
-	private Path lockFilePath;
+	private final Path lockFilePath;
+
+	private final String uuid;
+
+	private final String nonce;
+
+	private final Path socketPath;
+
+	private final String ideName;
+
+	private EclipseToolHandler toolHandler;
+
+	static {
+		cleanStaleLockFiles();
+	}
+
+	public LockFileManager(String ideName, String uuid, String nonce, Path socketPath, EclipseToolHandler toolHandler) {
+		this.ideName = ideName;
+		this.uuid = uuid;
+		this.nonce = nonce;
+		this.socketPath = socketPath;
+		this.toolHandler = toolHandler;
+		this.lockFilePath = LOCK_DIR.resolve(uuid + ".lock");
+	}
 
 	/**
 	 * Write a lock file so Copilot CLI can discover this IDE instance.
@@ -40,8 +64,7 @@ public class LockFileManager {
 	 * @param ideName          human-readable IDE name
 	 * @param workspaceFolders list of open workspace folder paths
 	 */
-	public void writeLockFile(String uuid, String socketPath, String nonce, String ideName,
-			List<String> workspaceFolders) throws IOException {
+	public void writeLockFile() throws IOException {
 		Files.createDirectories(LOCK_DIR);
 
 		Map<String, Object> lock = new LinkedHashMap<>();
@@ -55,10 +78,10 @@ public class LockFileManager {
 		lock.put("pid", ProcessHandle.current().pid());
 		lock.put("ideName", ideName);
 		lock.put("timestamp", System.currentTimeMillis());
-		lock.put("workspaceFolders", workspaceFolders);
+		lock.put("workspaceFolders", toolHandler.getWorkspaceFolders());
 		lock.put("isTrusted", true);
 
-		lockFilePath = LOCK_DIR.resolve(uuid + ".lock");
+
 		Files.writeString(lockFilePath, Json.serialize(lock), StandardCharsets.UTF_8);
 		ILog.get().info("MCP lock file written: " + lockFilePath);
 	}
@@ -74,7 +97,6 @@ public class LockFileManager {
 			} catch (IOException e) {
 				ILog.get().warn("Failed to delete MCP lock file: " + e.getMessage());
 			}
-			lockFilePath = null;
 		}
 	}
 
@@ -106,5 +128,11 @@ public class LockFileManager {
 		} catch (IOException e) {
 			ILog.get().warn("Error cleaning stale MCP lock files: " + e.getMessage());
 		}
+	}
+
+	@Override
+	public void resourceChanged(IResourceChangeEvent event) {
+		// TODO Auto-generated method stub
+
 	}
 }

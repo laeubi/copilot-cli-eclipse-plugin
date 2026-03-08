@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2025 Christoph Läubrich and others.
+ * Copyright (c) 2026 Christoph Läubrich and others.
  * This program and the accompanying materials are made available under the terms
  * of the Eclipse Public License 2.0 which accompanies this distribution, and is
  * available at https://www.eclipse.org/legal/epl-2.0/
@@ -11,102 +11,71 @@
  *******************************************************************************/
 package io.github.laeubi.copilot.cli.mcp;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 
+import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.runtime.ILog;
+import org.osgi.service.component.annotations.Activate;
+import org.osgi.service.component.annotations.Component;
+import org.osgi.service.component.annotations.Deactivate;
+import org.osgi.service.component.annotations.Reference;
 
 /**
  * Manages the MCP server lifecycle: starts the Unix domain socket server,
  * writes the lock file for CLI discovery, registers notification listeners, and
  * tears everything down on shutdown.
  */
+@Component(service = {})
 public class McpLifecycleManager {
 
-	private static McpLifecycleManager instance;
+	private final String uuid = UUID.randomUUID().toString();
+	private final LockFileManager lockFileManager;
+	private final EclipseToolHandler toolHandler;
+	private final NotificationPusher notificationPusher;
+	private final McpServer server;
 
-	private McpServer server;
-	private LockFileManager lockFileManager;
-	private NotificationPusher notificationPusher;
-	private EclipseToolHandler toolHandler;
-	private String uuid;
+	private IWorkspace workspace;
 
-	private McpLifecycleManager() {
-	}
-
-	public static synchronized McpLifecycleManager getInstance() {
-		if (instance == null) {
-			instance = new McpLifecycleManager();
-		}
-		return instance;
-	}
-
-	/**
-	 * Start the MCP server infrastructure. Safe to call multiple times.
-	 */
-	public synchronized void start() {
-		if (server != null && server.isRunning()) {
-			ILog.get().info("[MCP Lifecycle] Already running, skipping start");
-			return;
-		}
-
+	@Activate
+	public McpLifecycleManager(@Reference IWorkspace workspace) throws IOException {
+		this.workspace = workspace;
+		this.toolHandler = new EclipseToolHandler(workspace);
+		String nonce = UUID.randomUUID().toString();
+		Path socketPath = Path.of(System.getProperty("java.io.tmpdir"), "mcp-" + uuid + ".sock");
+		this.server = new McpServer(socketPath, nonce, toolHandler);
+		this.notificationPusher = new NotificationPusher(server, toolHandler);
+		this.lockFileManager = new LockFileManager("Eclipse IDE", uuid, nonce, socketPath, toolHandler);
+		ILog.get().info("[MCP Lifecycle] UUID=" + uuid + " socketPath=" + socketPath);
 		try {
-			ILog.get().info("[MCP Lifecycle] Starting MCP server infrastructure...");
-
-			// Clean stale lock files from previous sessions
-			LockFileManager.cleanStaleLockFiles();
-
-			uuid = UUID.randomUUID().toString();
-			String nonce = UUID.randomUUID().toString();
-			Path socketPath = Path.of(System.getProperty("java.io.tmpdir"), "mcp-" + uuid + ".sock");
-
-			ILog.get().info("[MCP Lifecycle] UUID=" + uuid + " socketPath=" + socketPath);
-
-			toolHandler = new EclipseToolHandler();
-			server = new McpServer(socketPath, nonce, toolHandler);
 			server.start();
-
+			workspace.addResourceChangeListener(lockFileManager);
 			// Write lock file for CLI discovery
-			lockFileManager = new LockFileManager();
-			List<String> workspaceFolders = EclipseToolHandler.getWorkspaceFolders();
+			List<String> workspaceFolders = toolHandler.getWorkspaceFolders();
 			ILog.get().info("[MCP Lifecycle] Workspace folders: " + workspaceFolders);
-			lockFileManager.writeLockFile(uuid, socketPath.toString(), nonce, "Eclipse IDE", workspaceFolders);
+			lockFileManager.writeLockFile();
 
 			// Start push notifications
-			notificationPusher = new NotificationPusher(server, toolHandler);
 			notificationPusher.start();
 
 			ILog.get().info("[MCP Lifecycle] MCP server started successfully for Copilot CLI /ide integration");
-		} catch (Exception e) {
+		} catch (IOException e) {
 			ILog.get().error("[MCP Lifecycle] Failed to start MCP server", e);
 			stop();
+			throw e;
 		}
 	}
 
-	/**
-	 * Stop the MCP server and clean up resources.
-	 */
-	public synchronized void stop() {
+	@Deactivate
+	public void stop() {
 		ILog.get().info("[MCP Lifecycle] Stopping MCP server...");
-		if (notificationPusher != null) {
-			notificationPusher.stop();
-			notificationPusher = null;
-		}
-		if (lockFileManager != null) {
-			lockFileManager.deleteLockFile();
-			lockFileManager = null;
-		}
-		if (server != null) {
-			server.stop();
-			server = null;
-		}
-		toolHandler = null;
-		uuid = null;
+		workspace.removeResourceChangeListener(lockFileManager);
+		lockFileManager.deleteLockFile();
+		notificationPusher.stop();
+		server.stop();
 		ILog.get().info("[MCP Lifecycle] MCP server stopped");
 	}
 
-	public boolean isRunning() {
-		return server != null && server.isRunning();
-	}
 }
