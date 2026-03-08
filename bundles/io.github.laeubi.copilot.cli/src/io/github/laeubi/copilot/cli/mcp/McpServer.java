@@ -429,6 +429,43 @@ public class McpServer {
 		tools.add(toolDef("update_session_name", "Set the CLI session display name",
 				Map.of("type", "object", "properties", sessionProps, "required", List.of("name"))));
 
+		// --- Additional tools ---
+
+		Map<String, Object> refreshProps = new LinkedHashMap<>();
+		refreshProps.put("path", Map.of("type", "string", "description", "Absolute file or folder path to refresh"));
+		tools.add(toolDef("refresh_path", "Refresh a file or folder in the IDE workspace",
+				Map.of("type", "object", "properties", refreshProps, "required", List.of("path"))));
+
+		Map<String, Object> buildProps = new LinkedHashMap<>();
+		buildProps.put("path", Map.of("type", "string", "description", "Absolute path to a file or folder; the containing project will be built"));
+		tools.add(toolDef("build", "Incremental build of the project containing the given path",
+				Map.of("type", "object", "properties", buildProps, "required", List.of("path"))));
+
+		tools.add(toolDef("list_consoles", "List all open consoles in the Console view",
+				Map.of("type", "object", "properties", Map.of(), "additionalProperties", false)));
+
+		Map<String, Object> consoleTextProps = new LinkedHashMap<>();
+		consoleTextProps.put("name", Map.of("type", "string", "description", "Console name (substring match) or numeric index from list_consoles"));
+		tools.add(toolDef("get_console_text", "Get the text content of a console (by name substring or index)",
+				Map.of("type", "object", "properties", consoleTextProps, "required", List.of("name"))));
+
+		tools.add(toolDef("list_launches", "List all launches in the IDE with their processes",
+				Map.of("type", "object", "properties", Map.of(), "additionalProperties", false)));
+
+		Map<String, Object> stopProps = new LinkedHashMap<>();
+		stopProps.put("id", Map.of("type", "string", "description", "Launch index or config name (substring match)"));
+		tools.add(toolDef("stop_launch", "Terminate a launch and all its processes",
+				Map.of("type", "object", "properties", stopProps, "required", List.of("id"))));
+
+		tools.add(toolDef("list_launch_configs", "List all saved launch configurations",
+				Map.of("type", "object", "properties", Map.of(), "additionalProperties", false)));
+
+		Map<String, Object> launchProps = new LinkedHashMap<>();
+		launchProps.put("name", Map.of("type", "string", "description", "Name of the launch configuration"));
+		launchProps.put("mode", Map.of("type", "string", "description", "Launch mode: run, debug, or profile (default: run)"));
+		tools.add(toolDef("launch", "Launch a saved launch configuration",
+				Map.of("type", "object", "properties", launchProps, "required", List.of("name"))));
+
 		return Map.of("result", Map.of("tools", tools));
 	}
 

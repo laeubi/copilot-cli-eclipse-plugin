@@ -37,10 +37,19 @@ import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.IWorkspace;
+import org.eclipse.core.resources.IncrementalProjectBuilder;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.ILog;
 import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Platform;
+import org.eclipse.core.runtime.jobs.Job;
+import org.eclipse.debug.core.DebugException;
+import org.eclipse.debug.core.DebugPlugin;
+import org.eclipse.debug.core.ILaunch;
+import org.eclipse.debug.core.ILaunchConfiguration;
+import org.eclipse.debug.core.ILaunchManager;
+import org.eclipse.debug.core.model.IProcess;
 import org.eclipse.jface.text.IDocument;
 import org.eclipse.jface.text.ITextSelection;
 import org.eclipse.jface.viewers.ISelection;
@@ -63,6 +72,10 @@ import org.eclipse.ui.IWorkbenchPage;
 import org.eclipse.ui.IWorkbenchPartReference;
 import org.eclipse.ui.IWorkbenchWindow;
 import org.eclipse.ui.PlatformUI;
+import org.eclipse.ui.console.ConsolePlugin;
+import org.eclipse.ui.console.IConsole;
+import org.eclipse.ui.console.IConsoleManager;
+import org.eclipse.ui.console.TextConsole;
 import org.eclipse.ui.texteditor.ITextEditor;
 
 /**
@@ -93,6 +106,14 @@ public class EclipseToolHandler implements McpToolHandler {
 			case "open_diff" -> openDiff(arguments);
 			case "close_diff" -> closeDiff(arguments);
 			case "update_session_name" -> updateSessionName(arguments);
+			case "refresh_path" -> refreshPath(arguments);
+			case "build" -> buildProject(arguments);
+			case "list_consoles" -> listConsoles();
+			case "get_console_text" -> getConsoleText(arguments);
+			case "list_launches" -> listLaunches();
+			case "stop_launch" -> stopLaunch(arguments);
+			case "list_launch_configs" -> listLaunchConfigs();
+			case "launch" -> launchConfig(arguments);
 			default -> throw new IllegalArgumentException("Unknown tool: " + toolName);
 			};
 			long elapsed = System.currentTimeMillis() - start;
@@ -680,6 +701,327 @@ public class EclipseToolHandler implements McpToolHandler {
 		} catch (Exception e) {
 			return "file://" + absPath;
 		}
+	}
+
+	// --- refresh_path ---
+
+	private Map<String, Object> refreshPath(Map<String, Object> arguments) throws Exception {
+		String path = (String) arguments.get("path");
+		if (path == null || path.isBlank()) {
+			throw new IllegalArgumentException("'path' is required");
+		}
+		LOG.info("[MCP Tool] refresh_path: " + path);
+		IResource resource = findResource(path);
+		if (resource == null) {
+			return Map.of("success", false, "error", "Resource not found in workspace: " + path);
+		}
+		resource.refreshLocal(IResource.DEPTH_INFINITE, new NullProgressMonitor());
+		return Map.of("success", true, "path", resource.getFullPath().toString());
+	}
+
+	// --- build ---
+
+	private Map<String, Object> buildProject(Map<String, Object> arguments) throws Exception {
+		String path = (String) arguments.get("path");
+		if (path == null || path.isBlank()) {
+			throw new IllegalArgumentException("'path' is required");
+		}
+		LOG.info("[MCP Tool] build: " + path);
+		IResource resource = findResource(path);
+		if (resource == null) {
+			return Map.of("success", false, "error", "Resource not found in workspace: " + path);
+		}
+		IProject project = resource.getProject();
+		if (project == null || !project.isOpen()) {
+			return Map.of("success", false, "error", "No open project for: " + path);
+		}
+		project.refreshLocal(IResource.DEPTH_INFINITE, new NullProgressMonitor());
+		project.build(IncrementalProjectBuilder.INCREMENTAL_BUILD, new NullProgressMonitor());
+		return Map.of("success", true, "project", project.getName());
+	}
+
+	// --- list_consoles ---
+
+	private List<Map<String, Object>> listConsoles() {
+		List<Map<String, Object>> result = new ArrayList<>();
+		try {
+			ConsolePlugin plugin = ConsolePlugin.getDefault();
+			if (plugin == null) {
+				return result;
+			}
+			IConsoleManager mgr = plugin.getConsoleManager();
+			IConsole[] consoles = mgr.getConsoles();
+			for (int i = 0; i < consoles.length; i++) {
+				IConsole c = consoles[i];
+				Map<String, Object> entry = new LinkedHashMap<>();
+				entry.put("index", i);
+				entry.put("name", c.getName());
+				entry.put("type", c.getType() != null ? c.getType() : "unknown");
+				result.add(entry);
+			}
+		} catch (Throwable t) {
+			LOG.warn("[MCP Tool] Error listing consoles: " + t.getMessage());
+		}
+		return result;
+	}
+
+	// --- get_console_text ---
+
+	private Map<String, Object> getConsoleText(Map<String, Object> arguments) {
+		String name = (String) arguments.get("name");
+		if (name == null || name.isBlank()) {
+			throw new IllegalArgumentException("'name' is required");
+		}
+		LOG.info("[MCP Tool] get_console_text: " + name);
+		try {
+			ConsolePlugin plugin = ConsolePlugin.getDefault();
+			if (plugin == null) {
+				return Map.of("error", "Console plugin not available");
+			}
+			IConsole[] consoles = plugin.getConsoleManager().getConsoles();
+
+			// Try as numeric index first
+			try {
+				int index = Integer.parseInt(name.trim());
+				if (index >= 0 && index < consoles.length) {
+					return readConsoleText(consoles[index]);
+				}
+				return Map.of("error", "Console index out of range: " + index + " (0-" + (consoles.length - 1) + ")");
+			} catch (NumberFormatException e) {
+				// not a number, try name matching
+			}
+
+			// Exact match first, then case-insensitive contains
+			for (IConsole c : consoles) {
+				if (name.equals(c.getName())) {
+					return readConsoleText(c);
+				}
+			}
+			String lowerName = name.toLowerCase();
+			for (IConsole c : consoles) {
+				if (c.getName().toLowerCase().contains(lowerName)) {
+					return readConsoleText(c);
+				}
+			}
+		} catch (Throwable t) {
+			LOG.warn("[MCP Tool] Error getting console text: " + t.getMessage());
+			return Map.of("error", t.getMessage());
+		}
+		return Map.of("error", "Console not found: " + name);
+	}
+
+	private Map<String, Object> readConsoleText(IConsole console) {
+		if (console instanceof TextConsole tc) {
+			IDocument doc = tc.getDocument();
+			String text = doc != null ? doc.get() : "";
+			return Map.of("name", console.getName(), "text", text, "length", text.length());
+		}
+		return Map.of("name", console.getName(), "error", "Console is not a text console");
+	}
+
+	// --- list_launches ---
+
+	private List<Map<String, Object>> listLaunches() {
+		List<Map<String, Object>> result = new ArrayList<>();
+		try {
+			DebugPlugin debugPlugin = DebugPlugin.getDefault();
+			if (debugPlugin == null) {
+				return result;
+			}
+			ILaunchManager mgr = debugPlugin.getLaunchManager();
+			int index = 0;
+			for (ILaunch launch : mgr.getLaunches()) {
+				Map<String, Object> entry = new LinkedHashMap<>();
+				entry.put("index", index++);
+				String launchName = launch.getLaunchConfiguration() != null
+						? launch.getLaunchConfiguration().getName()
+						: "unknown";
+				entry.put("name", launchName);
+				entry.put("mode", launch.getLaunchMode());
+				entry.put("terminated", launch.isTerminated());
+
+				List<Map<String, Object>> processes = new ArrayList<>();
+				for (IProcess process : launch.getProcesses()) {
+					Map<String, Object> pEntry = new LinkedHashMap<>();
+					pEntry.put("label", process.getLabel());
+					pEntry.put("terminated", process.isTerminated());
+					if (process.isTerminated()) {
+						try {
+							pEntry.put("exitValue", process.getExitValue());
+						} catch (DebugException e) {
+							// ignore
+						}
+					}
+					processes.add(pEntry);
+				}
+				entry.put("processes", processes);
+				result.add(entry);
+			}
+		} catch (Throwable t) {
+			LOG.warn("[MCP Tool] Error listing launches: " + t.getMessage());
+		}
+		return result;
+	}
+
+	// --- stop_launch ---
+
+	private Map<String, Object> stopLaunch(Map<String, Object> arguments) throws Exception {
+		Object idObj = arguments.get("id");
+		if (idObj == null) {
+			throw new IllegalArgumentException("'id' is required (index or launch config name)");
+		}
+		String idStr = idObj.toString().trim();
+		LOG.info("[MCP Tool] stop_launch: id=" + idStr);
+		DebugPlugin debugPlugin = DebugPlugin.getDefault();
+		if (debugPlugin == null) {
+			return Map.of("success", false, "error", "Debug plugin not available");
+		}
+		ILaunchManager mgr = debugPlugin.getLaunchManager();
+		ILaunch[] launches = mgr.getLaunches();
+
+		// Try as numeric index first
+		try {
+			int index = Integer.parseInt(idStr);
+			if (index >= 0 && index < launches.length) {
+				return terminateLaunch(launches[index]);
+			}
+			return Map.of("success", false, "error", "Launch index out of range: " + index);
+		} catch (NumberFormatException e) {
+			// not a number, try name matching
+		}
+
+		// Match by launch config name (exact first, then substring)
+		for (ILaunch launch : launches) {
+			if (launch.getLaunchConfiguration() != null
+					&& idStr.equals(launch.getLaunchConfiguration().getName())) {
+				return terminateLaunch(launch);
+			}
+		}
+		String lowerName = idStr.toLowerCase();
+		for (ILaunch launch : launches) {
+			if (launch.getLaunchConfiguration() != null
+					&& launch.getLaunchConfiguration().getName().toLowerCase().contains(lowerName)) {
+				return terminateLaunch(launch);
+			}
+		}
+
+		return Map.of("success", false, "error", "Launch not found: " + idStr);
+	}
+
+	private Map<String, Object> terminateLaunch(ILaunch launch) throws DebugException {
+		if (launch.isTerminated()) {
+			return Map.of("success", false, "error", "Launch already terminated");
+		}
+		String name = launch.getLaunchConfiguration() != null
+				? launch.getLaunchConfiguration().getName() : "unknown";
+		for (IProcess process : launch.getProcesses()) {
+			if (!process.isTerminated()) {
+				process.terminate();
+			}
+		}
+		return Map.of("success", true, "name", name);
+	}
+
+	// --- list_launch_configs ---
+
+	private List<Map<String, Object>> listLaunchConfigs() {
+		List<Map<String, Object>> result = new ArrayList<>();
+		try {
+			DebugPlugin debugPlugin = DebugPlugin.getDefault();
+			if (debugPlugin == null) {
+				return result;
+			}
+			ILaunchManager mgr = debugPlugin.getLaunchManager();
+			for (ILaunchConfiguration config : mgr.getLaunchConfigurations()) {
+				Map<String, Object> entry = new LinkedHashMap<>();
+				entry.put("name", config.getName());
+				try {
+					entry.put("type", config.getType().getName());
+					entry.put("typeId", config.getType().getIdentifier());
+				} catch (CoreException e) {
+					entry.put("type", "unknown");
+				}
+				result.add(entry);
+			}
+		} catch (Throwable t) {
+			LOG.warn("[MCP Tool] Error listing launch configs: " + t.getMessage());
+		}
+		return result;
+	}
+
+	// --- launch ---
+
+	private Map<String, Object> launchConfig(Map<String, Object> arguments) throws Exception {
+		String configName = (String) arguments.get("name");
+		if (configName == null || configName.isBlank()) {
+			throw new IllegalArgumentException("'name' is required");
+		}
+		String mode = (String) arguments.get("mode");
+		if (mode == null || mode.isBlank()) {
+			mode = ILaunchManager.RUN_MODE;
+		}
+		LOG.info("[MCP Tool] launch: config=" + configName + " mode=" + mode);
+		DebugPlugin debugPlugin = DebugPlugin.getDefault();
+		if (debugPlugin == null) {
+			return Map.of("success", false, "error", "Debug plugin not available");
+		}
+		ILaunchManager mgr = debugPlugin.getLaunchManager();
+		for (ILaunchConfiguration config : mgr.getLaunchConfigurations()) {
+			if (configName.equals(config.getName())) {
+				final String launchMode = mode;
+				CompletableFuture<Map<String, Object>> future = new CompletableFuture<>();
+				Job job = Job.create("Launch: " + configName, monitor -> {
+					try {
+						ILaunch launch = config.launch(launchMode, monitor, true, true);
+						Map<String, Object> res = new LinkedHashMap<>();
+						res.put("success", true);
+						res.put("config", configName);
+						res.put("mode", launchMode);
+						res.put("launchId", System.identityHashCode(launch));
+						future.complete(res);
+					} catch (CoreException e) {
+						future.complete(Map.of("success", false, "error", e.getMessage()));
+					}
+				});
+				job.schedule();
+				return future.get();
+			}
+		}
+		return Map.of("success", false, "error", "Launch configuration not found: " + configName);
+	}
+
+	// --- Resource lookup helper ---
+
+	private IResource findResource(String path) {
+		if (path.startsWith("file:")) {
+			try {
+				path = new java.net.URI(path).getPath();
+			} catch (Exception e) {
+				// use as-is
+			}
+		}
+		java.nio.file.Path fsPath = java.nio.file.Path.of(path);
+		IFile[] files = workspace.getRoot().findFilesForLocationURI(fsPath.toUri());
+		if (files.length > 0) {
+			return files[0];
+		}
+		for (IProject project : workspace.getRoot().getProjects()) {
+			if (project.isOpen() && project.getLocation() != null) {
+				org.eclipse.core.runtime.IPath projPath = project.getLocation();
+				org.eclipse.core.runtime.IPath target = org.eclipse.core.runtime.Path.fromOSString(path);
+				if (projPath.equals(target)) {
+					return project;
+				}
+				if (projPath.isPrefixOf(target)) {
+					org.eclipse.core.runtime.IPath relative = target.makeRelativeTo(projPath);
+					IResource member = project.findMember(relative);
+					if (member != null) {
+						return member;
+					}
+				}
+			}
+		}
+		return null;
 	}
 
 	/**

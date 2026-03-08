@@ -284,7 +284,8 @@ public class IdeCliTest {
 
 	private static void commandLoop(Scanner scanner) {
 		String[] commands = { "get_vscode_info", "get_selection", "get_diagnostics", "open_diff", "close_diff",
-				"update_session_name", "tools/list", "ping", "raw", "exit" };
+				"update_session_name", "refresh_path", "build", "list_consoles", "get_console_text", "list_launches",
+				"stop_launch", "list_launch_configs", "launch", "tools/list", "ping", "raw", "exit" };
 
 		while (true) {
 			System.out.println("┌─────────────────────────────────────────┐");
@@ -388,6 +389,61 @@ public class IdeCliTest {
 						continue;
 					}
 					callTool(cmd, Map.of("name", name));
+				}
+				case "refresh_path" -> {
+					System.out.print("Path to refresh: ");
+					String rpath = scanner.nextLine().trim();
+					if (rpath.isEmpty()) {
+						System.err.println("❌ Path is required.");
+						continue;
+					}
+					callTool(cmd, Map.of("path", rpath));
+				}
+				case "build" -> {
+					System.out.print("Path (file or folder in project): ");
+					String bpath = scanner.nextLine().trim();
+					if (bpath.isEmpty()) {
+						System.err.println("❌ Path is required.");
+						continue;
+					}
+					callTool(cmd, Map.of("path", bpath));
+				}
+				case "list_consoles" -> callTool(cmd, Map.of());
+				case "get_console_text" -> {
+					System.out.print("Console name: ");
+					String cname = scanner.nextLine().trim();
+					if (cname.isEmpty()) {
+						System.err.println("❌ Name is required.");
+						continue;
+					}
+					callTool(cmd, Map.of("name", cname));
+				}
+				case "list_launches" -> callTool(cmd, Map.of());
+				case "stop_launch" -> {
+					System.out.print("Launch index or name: ");
+					String launchId = scanner.nextLine().trim();
+					if (launchId.isEmpty()) {
+						System.err.println("❌ Index or name is required.");
+						continue;
+					}
+					callTool(cmd, Map.of("id", launchId));
+				}
+				case "list_launch_configs" -> callTool(cmd, Map.of());
+				case "launch" -> {
+					System.out.print("Launch config name: ");
+					String lcName = scanner.nextLine().trim();
+					if (lcName.isEmpty()) {
+						System.err.println("❌ Name is required.");
+						continue;
+					}
+					System.out.print("Mode (run/debug/profile, default=run): ");
+					String lcMode = scanner.nextLine().trim();
+					Map<String, Object> lcArgs = new LinkedHashMap<>();
+					lcArgs.put("name", lcName);
+					if (!lcMode.isEmpty()) {
+						lcArgs.put("mode", lcMode);
+					}
+					callTool(cmd, lcArgs);
 				}
 				case "tools/list" -> {
 					String resp = sendRequest("tools/list", Map.of());
@@ -834,7 +890,7 @@ public class IdeCliTest {
 
 		if (value instanceof Map<?, ?> map) {
 			if (map.isEmpty()) {
-				System.out.println("{}");
+				System.out.print("{}");
 				return;
 			}
 			System.out.println("{");

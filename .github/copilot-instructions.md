@@ -39,17 +39,25 @@ Extension points in `plugin.xml`:
 The embedded MCP server implements the [Copilot CLI `/ide` protocol](https://github.com/AbandonedScope/CopilotCliIde/blob/main/doc/protocol.md):
 
 1. **`McpServer`** — Unix domain socket listener, HTTP/1.1 parser, JSON-RPC 2.0 dispatch, SSE push
-2. **`EclipseToolHandler`** — implements 6 MCP tools using Eclipse APIs:
+2. **`EclipseToolHandler`** — implements 14 MCP tools using Eclipse APIs:
    - `get_vscode_info` — IDE metadata (must use this exact name for CLI compatibility)
    - `get_selection` — current editor selection via `ITextEditor`/`ITextSelection` (uses `syncExec` for thread safety, adapter pattern for multi-page editors)
    - `get_diagnostics` — workspace markers via `IMarker` API
    - `open_diff` — opens `CompareEditorInput` with **Accept/Reject buttons** in an integrated action bar, blocks until user acts. On Accept: writes changes to file and refreshes workspace.
    - `close_diff` — closes compare editor by tab name
    - `update_session_name` — fire-and-forget
+   - `refresh_path` — refreshes a file/folder in the workspace (`IResource.refreshLocal`)
+   - `build` — finds the project for a path, refreshes, then triggers `IncrementalProjectBuilder.INCREMENTAL_BUILD`
+   - `list_consoles` — lists all consoles via `ConsolePlugin`/`IConsoleManager`
+   - `get_console_text` — reads the `IDocument` of a named `TextConsole`
+   - `list_processes` — lists all `IProcess` instances from `DebugPlugin.getLaunchManager()`
+   - `stop_process` — terminates a process by id (`IProcess.terminate()`)
+   - `list_launch_configs` — lists all `ILaunchConfiguration` from the launch manager
+   - `launch` — launches a named configuration in a background `Job`
 3. **`NotificationPusher`** — pushes `selection_changed` and `diagnostics_changed` SSE events with 200ms debounce
 4. **`LockFileManager`** — writes/deletes `~/.copilot/ide/{uuid}.lock` for CLI discovery; implements `IResourceChangeListener` to rewrite the lock file when projects are added, removed, opened or closed
 5. **`McpLifecycleManager`** — DS component that orchestrates startup/shutdown; registers `IPropertyChangeListener` to rewrite the lock file when the workspace-folder style preference changes
-6. **`WorkspaceFolderStyle`** — constants for the four workspace-folder styles: `WORKSPACE`, `PROJECTS` (default), `HIERARCHICAL`, `GIT_ROOTS`
+6. **`WorkspaceFolderStyle`** — enum for the four workspace-folder styles: `WORKSPACE`, `PROJECTS`, `HIERARCHICAL`, `GIT_ROOTS` (default)
 7. **`CopilotCliPreferencePage`** — Eclipse preference page under *Preferences → GitHub Copilot CLI* to choose the workspace-folder style
 8. **`Activator`** — `AbstractUIPlugin` providing the shared preference store and default preference initialisation
 9. **`Json`** — minimal JSON parser/serializer (no external dependencies)
@@ -64,9 +72,9 @@ The embedded MCP server implements the [Copilot CLI `/ide` protocol](https://git
 ## Conventions
 
 - **Java 21** language level. The bundle requires `JavaSE-21` execution environment.
-- **No external dependencies** — the plugin depends only on Eclipse platform bundles (`org.eclipse.ui`, `org.eclipse.core.*`, `org.eclipse.terminal.*`, `org.eclipse.jface.text`, `org.eclipse.compare`, `org.eclipse.cdt.utils.pty`). JSON handling uses a built-in minimal parser.
+- **No external dependencies** — the plugin depends only on Eclipse platform bundles (`org.eclipse.ui`, `org.eclipse.core.*`, `org.eclipse.terminal.*`, `org.eclipse.jface.text`, `org.eclipse.compare`, `org.eclipse.debug.core`, `org.eclipse.debug.ui`, `org.eclipse.ui.console`, `org.eclipse.cdt.utils.pty`). JSON handling uses a built-in minimal parser.
 - OSGi metadata lives in `META-INF/MANIFEST.MF` (not generated from pom.xml). The `plugin.xml` declares all extension points. Both files must be kept in sync with Java code changes.
 - The `copilot` command name is hardcoded in `CopilotCliConnector`. The plugin assumes the CLI is on the system PATH.
-- The MCP server name **must** be `"vscode-copilot-cli"` and all 6 tool names must match exactly — the CLI matches on these strings.
+- The MCP server name **must** be `"vscode-copilot-cli"` and the 6 base tool names must match exactly — the CLI matches on these strings. The 8 additional tools (see `ADDITIONAL_TOOLS.md`) use custom names.
 - Cross-platform handling: PTY support is detected at runtime, line separators and local echo are configured per-platform using `Platform.getOS()`.
 - The bundle uses **lazy activation** (`Bundle-ActivationPolicy: lazy`).

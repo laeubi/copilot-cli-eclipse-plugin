@@ -16,7 +16,10 @@ Require-Bundle: org.eclipse.ui,
  org.eclipse.jface.text,
  org.eclipse.ui.editors,
  org.eclipse.ui.workbench.texteditor,
- org.eclipse.compare
+ org.eclipse.compare,
+ org.eclipse.debug.core,
+ org.eclipse.debug.ui,
+ org.eclipse.ui.console
 Service-Component: OSGI-INF/io.github.laeubi.copilot.cli.mcp.McpLifecycleManager.xml
 Import-Package: org.eclipse.cdt.utils.pty;mandatory:=native
 Bundle-ActivationPolicy: lazy
