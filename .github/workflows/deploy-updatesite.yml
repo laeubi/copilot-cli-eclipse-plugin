@@ -1,5 +1,5 @@
-# Simple workflow for deploying static content to GitHub Pages
-name: Deploy static content to Pages
+# Build documentation and p2 update site, then publish both to GitHub Pages
+name: Build and Deploy to GitHub Pages
 
 on:
   # Runs on pushes targeting the default branch
@@ -22,8 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Single deploy job since we're just deploying
-  deploy:
+  build-and-deploy:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -31,20 +30,52 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
           cache: 'maven'
+
       - name: Build with Maven
         run: mvn clean verify
+
+      - name: Install pandoc
+        run: sudo apt-get install -y pandoc
+
+      - name: Prepare site
+        run: |
+          mkdir -p _site/repository
+
+          # Copy p2 repository content into the /repository sub-path so that the
+          # update-site URL becomes:  https://<owner>.github.io/<repo>/repository/
+          cp -r releng/io.github.laeubi.copilot.cli.repository/target/repository/. _site/repository/
+
+          # Convert README.md → index.html (GitHub-flavoured Markdown → HTML5)
+          pandoc README.md \
+            --from gfm \
+            --to html5 \
+            --standalone \
+            --metadata title="GitHub Copilot CLI Eclipse Plugin" \
+            -o _site/index.html
+
+          # Convert ADDITIONAL_TOOLS.md → additional-tools.html
+          pandoc ADDITIONAL_TOOLS.md \
+            --from gfm \
+            --to html5 \
+            --standalone \
+            --metadata title="Additional MCP Tools – GitHub Copilot CLI Eclipse Plugin" \
+            -o _site/additional-tools.html
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: 'releng/io.github.laeubi.copilot.cli.repository/target/repository/'
+          path: '_site/'
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
