@@ -45,7 +45,16 @@ public class McpLifecycleManager {
 		this.workspace = workspace;
 		this.toolHandler = new EclipseToolHandler(workspace);
 		String nonce = UUID.randomUUID().toString();
-		Path socketPath = Path.of(System.getProperty("java.io.tmpdir"), "mcp-" + uuid + ".sock");
+		Path tmpDir = Path.of(System.getProperty("java.io.tmpdir"));
+		try {
+			// On Windows, java.io.tmpdir may contain an 8.3 abbreviated username
+			// (e.g. MYLONGU~1). toRealPath() resolves it to the full long path so
+			// that the socket path written to the lock file is usable by the CLI.
+			tmpDir = tmpDir.toRealPath();
+		} catch (IOException e) {
+			// fall back to the unresolved path if the directory does not exist
+		}
+		Path socketPath = tmpDir.resolve("mcp-" + uuid + ".sock");
 		this.server = new McpServer(socketPath, nonce, toolHandler);
 		this.notificationPusher = new NotificationPusher(server, toolHandler);
 		this.lockFileManager = new LockFileManager("Eclipse IDE", uuid, nonce, socketPath, toolHandler);
