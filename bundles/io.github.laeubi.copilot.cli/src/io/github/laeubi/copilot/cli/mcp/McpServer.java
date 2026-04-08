@@ -16,6 +16,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
 import java.nio.channels.Channels;
@@ -38,9 +40,15 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.eclipse.core.runtime.ILog;
 
 /**
- * MCP (Model Context Protocol) server that listens on a Unix domain socket and
- * speaks Streamable HTTP with persistent connections. Handles JSON-RPC 2.0
- * messages for tool calls, initialization, and SSE push notifications.
+ * MCP (Model Context Protocol) server that speaks Streamable HTTP with
+ * persistent connections. Handles JSON-RPC 2.0 messages for tool calls,
+ * initialization, and SSE push notifications.
+ * <p>
+ * On non-Windows platforms the server listens on a Unix domain socket. On
+ * Windows it falls back to TCP on the loopback interface because Node.js
+ * (used by Copilot CLI) does not support native AF_UNIX sockets on Windows
+ * — it uses Named Pipes instead — which are incompatible with Java's
+ * {@link ServerSocketChannel}/{@link StandardProtocolFamily#UNIX}.
  */
 public class McpServer {
 
@@ -58,8 +66,28 @@ public class McpServer {
 
 	private ServerSocketChannel serverChannel;
 
+	/**
+	 * Create a server that listens on a Unix domain socket.
+	 *
+	 * @param socketPath path for the Unix domain socket file
+	 * @param nonce      authentication nonce
+	 * @param toolHandler tool handler for MCP tool calls
+	 */
 	public McpServer(Path socketPath, String nonce, McpToolHandler toolHandler) {
 		this.socketPath = socketPath;
+		this.nonce = nonce;
+		this.toolHandler = toolHandler;
+		this.executor = Executors.newVirtualThreadPerTaskExecutor();
+	}
+
+	/**
+	 * Create a server that listens on TCP loopback (for Windows).
+	 *
+	 * @param nonce       authentication nonce
+	 * @param toolHandler tool handler for MCP tool calls
+	 */
+	public McpServer(String nonce, McpToolHandler toolHandler) {
+		this.socketPath = null;
 		this.nonce = nonce;
 		this.toolHandler = toolHandler;
 		this.executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -69,10 +97,18 @@ public class McpServer {
 		if (!running.compareAndSet(false, true)) {
 			return;
 		}
-		Files.deleteIfExists(socketPath);
-		serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
-		serverChannel.bind(UnixDomainSocketAddress.of(socketPath));
-		ILog.get().info("[MCP] Server listening on " + socketPath);
+		if (socketPath != null) {
+			// Unix domain socket (Linux, macOS)
+			Files.deleteIfExists(socketPath);
+			serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
+			serverChannel.bind(UnixDomainSocketAddress.of(socketPath));
+			ILog.get().info("[MCP] Server listening on Unix socket " + socketPath);
+		} else {
+			// TCP loopback (Windows fallback)
+			serverChannel = ServerSocketChannel.open();
+			serverChannel.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+			ILog.get().info("[MCP] Server listening on TCP " + serverChannel.getLocalAddress());
+		}
 
 		executor.submit(() -> {
 			while (running.get()) {
@@ -107,7 +143,9 @@ public class McpServer {
 			// ignore on shutdown
 		}
 		try {
-			Files.deleteIfExists(socketPath);
+			if (socketPath != null) {
+				Files.deleteIfExists(socketPath);
+			}
 		} catch (IOException e) {
 			// ignore
 		}
@@ -117,6 +155,21 @@ public class McpServer {
 
 	public boolean isRunning() {
 		return running.get();
+	}
+
+	/**
+	 * Returns the TCP port the server is listening on, or {@code -1} if the
+	 * server uses a Unix domain socket.
+	 */
+	public int getLocalPort() {
+		if (socketPath != null || serverChannel == null) {
+			return -1;
+		}
+		try {
+			return ((InetSocketAddress) serverChannel.getLocalAddress()).getPort();
+		} catch (IOException e) {
+			return -1;
+		}
 	}
 
 	/**

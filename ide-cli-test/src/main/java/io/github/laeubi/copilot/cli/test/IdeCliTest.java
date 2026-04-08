@@ -16,7 +16,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.StandardProtocolFamily;
+import java.net.URI;
 import java.net.UnixDomainSocketAddress;
 import java.nio.channels.Channels;
 import java.nio.channels.SocketChannel;
@@ -41,6 +43,7 @@ public class IdeCliTest {
 	private static final AtomicInteger requestId = new AtomicInteger(0);
 
 	private static String socketPath;
+	private static String scheme;
 	private static String nonce;
 	private static String sessionId;
 
@@ -169,6 +172,7 @@ public class IdeCliTest {
 
 		LockFile selected = lockFiles.get(choice);
 		socketPath = (String) selected.data.get("socketPath");
+		scheme = (String) selected.data.getOrDefault("scheme", "pipe");
 		@SuppressWarnings("unchecked")
 		Map<String, Object> headers = (Map<String, Object>) selected.data.get("headers");
 		String authHeader = (String) headers.get("Authorization");
@@ -225,8 +229,7 @@ public class IdeCliTest {
 	private static void startSseListener() {
 		Thread.ofVirtual().name("sse-listener").start(() -> {
 			try {
-				SocketChannel sseChannel = SocketChannel.open(StandardProtocolFamily.UNIX);
-				sseChannel.connect(UnixDomainSocketAddress.of(socketPath));
+				SocketChannel sseChannel = openChannel();
 
 				OutputStream sseOs = Channels.newOutputStream(sseChannel);
 				InputStream sseIs = Channels.newInputStream(sseChannel);
@@ -509,11 +512,26 @@ public class IdeCliTest {
 	// --- HTTP/MCP Transport ---
 
 	private static void openPostConnection() throws IOException {
-		postChannel = SocketChannel.open(StandardProtocolFamily.UNIX);
-		postChannel.connect(UnixDomainSocketAddress.of(socketPath));
+		postChannel = openChannel();
 		postOs = Channels.newOutputStream(postChannel);
 		postReader = new BufferedReader(
 				new InputStreamReader(Channels.newInputStream(postChannel), StandardCharsets.UTF_8));
+	}
+
+	/**
+	 * Opens a {@link SocketChannel} to the server.  Uses TCP when the lock file
+	 * scheme is {@code "http"}, otherwise connects via Unix domain socket.
+	 */
+	private static SocketChannel openChannel() throws IOException {
+		if ("http".equals(scheme)) {
+			URI uri = URI.create(socketPath);
+			SocketChannel ch = SocketChannel.open();
+			ch.connect(new InetSocketAddress(uri.getHost(), uri.getPort()));
+			return ch;
+		}
+		SocketChannel ch = SocketChannel.open(StandardProtocolFamily.UNIX);
+		ch.connect(UnixDomainSocketAddress.of(socketPath));
+		return ch;
 	}
 
 	private static void closePostConnection() {
