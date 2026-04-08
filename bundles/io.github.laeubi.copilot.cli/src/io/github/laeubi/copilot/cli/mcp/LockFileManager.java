@@ -41,7 +41,9 @@ public class LockFileManager implements IResourceChangeListener, IPropertyChange
 
 	private final String nonce;
 
-	private final Path socketPath;
+	private final String socketPathValue;
+
+	private final String scheme;
 
 	private final String ideName;
 
@@ -51,12 +53,19 @@ public class LockFileManager implements IResourceChangeListener, IPropertyChange
 		cleanStaleLockFiles();
 	}
 
-	public LockFileManager(String ideName, String uuid, String nonce, Path socketPath,
+	/**
+	 * @param useTcp when {@code true} the lock file advertises the
+	 *               {@code socketPathValue} with {@code "scheme":"http"} so that
+	 *               the Copilot CLI connects via TCP instead of a named pipe /
+	 *               Unix domain socket.
+	 */
+	public LockFileManager(String ideName, String uuid, String nonce, String socketPathValue, boolean useTcp,
 			EclipseToolHandler toolHandler) {
 		this.ideName = ideName;
 		this.uuid = uuid;
 		this.nonce = nonce;
-		this.socketPath = socketPath;
+		this.socketPathValue = socketPathValue;
+		this.scheme = useTcp ? "http" : "pipe";
 		this.toolHandler = toolHandler;
 		this.lockFilePath = LOCK_DIR.resolve(uuid + ".lock");
 	}
@@ -68,8 +77,8 @@ public class LockFileManager implements IResourceChangeListener, IPropertyChange
 		Files.createDirectories(LOCK_DIR);
 
 		Map<String, Object> lock = new LinkedHashMap<>();
-		lock.put("socketPath", socketPath);
-		lock.put("scheme", "pipe");
+		lock.put("socketPath", socketPathValue);
+		lock.put("scheme", scheme);
 
 		Map<String, Object> headers = new LinkedHashMap<>();
 		headers.put("Authorization", "Nonce " + nonce);

@@ -26,15 +26,16 @@ import org.osgi.service.component.annotations.Reference;
 import io.github.laeubi.copilot.cli.Activator;
 
 /**
- * Manages the MCP server lifecycle: starts the Unix domain socket server,
- * writes the lock file for CLI discovery, registers notification listeners, and
- * tears everything down on shutdown.
+ * Manages the MCP server lifecycle: starts the server (Unix domain socket on
+ * Linux/macOS, TCP loopback on Windows), writes the lock file for CLI
+ * discovery, registers notification listeners, and tears everything down on
+ * shutdown.
  */
 @Component(service = {})
 public class McpLifecycleManager {
 
 	private final String uuid = UUID.randomUUID().toString();
-	private final LockFileManager lockFileManager;
+	private LockFileManager lockFileManager;
 	private final EclipseToolHandler toolHandler;
 	private final NotificationPusher notificationPusher;
 	private final McpServer server;
@@ -45,24 +46,46 @@ public class McpLifecycleManager {
 		this.workspace = workspace;
 		this.toolHandler = new EclipseToolHandler(workspace);
 		String nonce = UUID.randomUUID().toString();
-		Path tmpDir = Path.of(System.getProperty("java.io.tmpdir"));
-		try {
-			// On Windows, java.io.tmpdir may contain an 8.3 abbreviated username
-			// (e.g. MYLONGU~1). toRealPath() resolves it to the full long path so
-			// that the socket path written to the lock file is usable by the CLI.
-			tmpDir = tmpDir.toRealPath();
-		} catch (IOException e) {
-			// fall back to the unresolved path if the directory does not exist
+		boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
+
+		Path socketPath = null;
+		if (isWindows) {
+			// On Windows, Node.js (used by Copilot CLI) does not support native
+			// AF_UNIX sockets — it uses Named Pipes instead.  Java cannot create
+			// Named Pipes, so fall back to TCP on the loopback interface.
+			this.server = new McpServer(nonce, toolHandler);
+		} else {
+			Path tmpDir = Path.of(System.getProperty("java.io.tmpdir"));
+			try {
+				// On some systems java.io.tmpdir may contain abbreviated paths.
+				// toRealPath() resolves them so the socket path written to the
+				// lock file is usable by the CLI.
+				tmpDir = tmpDir.toRealPath();
+			} catch (IOException e) {
+				// fall back to the unresolved path if the directory does not exist
+			}
+			socketPath = tmpDir.resolve("mcp-" + uuid + ".sock");
+			this.server = new McpServer(socketPath, nonce, toolHandler);
 		}
-		Path socketPath = tmpDir.resolve("mcp-" + uuid + ".sock");
-		this.server = new McpServer(socketPath, nonce, toolHandler);
+
 		this.notificationPusher = new NotificationPusher(server, toolHandler);
-		this.lockFileManager = new LockFileManager("Eclipse IDE", uuid, nonce, socketPath, toolHandler);
 
 		ILog.get().info("[MCP Lifecycle] Starting MCP server infrastructure...");
-		ILog.get().info("[MCP Lifecycle] UUID=" + uuid + " socketPath=" + socketPath);
+		ILog.get().info("[MCP Lifecycle] UUID=" + uuid + " isWindows=" + isWindows);
 		try {
 			server.start();
+
+			String socketPathValue;
+			if (isWindows) {
+				int port = server.getLocalPort();
+				socketPathValue = "http://127.0.0.1:" + port;
+				ILog.get().info("[MCP Lifecycle] TCP port=" + port);
+			} else {
+				socketPathValue = socketPath.toString();
+			}
+
+			this.lockFileManager = new LockFileManager("Eclipse IDE", uuid, nonce, socketPathValue, isWindows,
+					toolHandler);
 			workspace.addResourceChangeListener(lockFileManager);
 			IPreferenceStore prefs = getPreferenceStore();
 			if (prefs != null) {
@@ -82,11 +105,13 @@ public class McpLifecycleManager {
 	public void stop() {
 		ILog.get().info("[MCP Lifecycle] Stopping MCP server...");
 		IPreferenceStore prefs = getPreferenceStore();
-		if (prefs != null) {
+		if (prefs != null && lockFileManager != null) {
 			prefs.removePropertyChangeListener(lockFileManager);
 		}
-		workspace.removeResourceChangeListener(lockFileManager);
-		lockFileManager.deleteLockFile();
+		if (lockFileManager != null) {
+			workspace.removeResourceChangeListener(lockFileManager);
+			lockFileManager.deleteLockFile();
+		}
 		notificationPusher.stop();
 		server.stop();
 		ILog.get().info("[MCP Lifecycle] MCP server stopped");
