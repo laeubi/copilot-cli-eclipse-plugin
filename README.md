@@ -34,7 +34,7 @@ An Eclipse plugin that integrates [GitHub Copilot CLI](https://github.com/github
 
 1. In Eclipse, go to **Help** → **Install New Software...**
 2. Click **Add...** to add a new repository
-3. Enter the update site URL `https://laeubi.github.io/copilot-cli-eclipse-plugin` - **Important** The URL can *not* be browsed with a regular browser! It still works, just copy and paste into the dialog!
+3. Enter the update site URL `https://peterkir.github.io/copilot-cli-eclipse-plugin/repository/` - **Important** The URL can *not* be browsed with a regular browser! It still works, just copy and paste into the dialog!
 4. Select "Eclipse copilot-cli IDE integration"
 5. Click **Next** and follow the installation wizard
 6. Restart Eclipse when prompted
