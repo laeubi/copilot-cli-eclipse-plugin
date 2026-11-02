@@ -97,9 +97,9 @@ If the command is not found, please install the GitHub Copilot CLI following the
 mvn -f transport-tests/pom.xml test
 ```
 
-The tests cover transport cleanup and shutdown without launching Eclipse. Shared
-lifecycle tests run across platforms, with additional Windows named-pipe and Unix
-socket tests. CI runs on Linux and Windows.
+The tests cover transport cleanup, shutdown, and accept-failure recovery without
+launching Eclipse. Shared lifecycle tests run across platforms, with additional
+Windows named-pipe and Unix socket tests. CI runs on Linux and Windows.
 
 ## Development Setup
 

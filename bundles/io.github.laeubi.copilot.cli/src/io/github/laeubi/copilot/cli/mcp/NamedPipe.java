@@ -175,6 +175,10 @@ final class NamedPipe {
 		}
 	}
 
+	synchronized boolean isOpen() {
+		return open;
+	}
+
 	/** Stops accepting, releasing a blocked {@link #accept()}. */
 	synchronized void close() {
 		if (open) {

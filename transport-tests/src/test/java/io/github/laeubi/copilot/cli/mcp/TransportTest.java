@@ -28,11 +28,13 @@ import java.net.UnixDomainSocketAddress;
 import java.nio.channels.SocketChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Set;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -47,7 +49,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
+import org.junit.jupiter.api.io.TempDir;
 import org.eclipse.core.runtime.ILog;
+import org.eclipse.jface.util.PropertyChangeEvent;
 
 class TransportTest {
 	private static final ILog LOG = ILog.class.cast(java.lang.reflect.Proxy.newProxyInstance(
@@ -93,6 +97,534 @@ class TransportTest {
 
 	private static String pipeName() {
 		return "\\\\.\\pipe\\copilot-transport-test-" + UUID.randomUUID();
+	}
+
+	private static class ScriptedListener implements McpServer.Listener {
+		final LinkedBlockingQueue<Object> actions = new LinkedBlockingQueue<>();
+		final List<Long> callTimes = new CopyOnWriteArrayList<>();
+		final AtomicInteger attempts = new AtomicInteger();
+		volatile boolean open = true;
+
+		@Override
+		public McpServer.Connection accept() throws IOException {
+			callTimes.add(System.nanoTime());
+			attempts.incrementAndGet();
+			Object action;
+			try {
+				action = actions.take();
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				throw new IOException("Accept interrupted", e);
+			}
+			if (action instanceof IOException failure) {
+				throw failure;
+			}
+			if (action instanceof RuntimeException failure) {
+				throw failure;
+			}
+			if (action instanceof Error failure) {
+				throw failure;
+			}
+			return (McpServer.Connection) action;
+		}
+
+		@Override
+		public boolean isOpen() {
+			return open;
+		}
+
+		@Override
+		public void close() {
+			open = false;
+			actions.offer(new IOException("Listener closed"));
+		}
+	}
+
+	private static class IdleConnection implements McpServer.Connection {
+		final CountDownLatch entered = new CountDownLatch(1);
+		final CountDownLatch closed = new CountDownLatch(1);
+		final AtomicInteger closes = new AtomicInteger();
+		private final InputStream input = new InputStream() {
+			@Override
+			public int read() throws IOException {
+				entered.countDown();
+				try {
+					closed.await();
+					return -1;
+				} catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+					throw new IOException(e);
+				}
+			}
+		};
+
+		public InputStream in() { return input; }
+		public OutputStream out() { return OutputStream.nullOutputStream(); }
+		public boolean isOpen() { return closed.getCount() != 0; }
+		public void close() { closes.incrementAndGet(); closed.countDown(); }
+	}
+
+	private static McpServer scriptedServer(ScriptedListener listener) {
+		return scriptedServer(listener, LOG);
+	}
+
+	private static McpServer scriptedServer(ScriptedListener listener, ILog log) {
+		return new McpServer(null, null, "test", (tool, args) -> null, log) {
+			@Override
+			Listener createListener() {
+				return listener;
+			}
+		};
+	}
+
+	@Test
+	void persistentAcceptFailuresLogOnceAtStartAndCapThenReportRecovery() throws Exception {
+		List<String> warnings = new CopyOnWriteArrayList<>();
+		List<String> recoveries = new CopyOnWriteArrayList<>();
+		AtomicInteger traces = new AtomicInteger();
+		ILog log = ILog.class.cast(java.lang.reflect.Proxy.newProxyInstance(
+				ILog.class.getClassLoader(), new Class<?>[] { ILog.class }, (proxy, method, args) -> {
+					if (method.getName().equals("warn")) {
+						warnings.add((String) args[0]);
+						if (args.length == 2) {
+							traces.incrementAndGet();
+						}
+					} else if (method.getName().equals("info") && ((String) args[0]).contains("acceptance recovered")) {
+						recoveries.add((String) args[0]);
+					}
+					return null;
+				}));
+		ScriptedListener listener = new ScriptedListener();
+		McpServer server = scriptedServer(listener, log);
+		IdleConnection first = new IdleConnection();
+		IdleConnection second = new IdleConnection();
+		for (int i = 0; i < 6; i++) {
+			listener.actions.add(new IOException("Persistent resource exhaustion"));
+		}
+		listener.actions.add(first);
+		try {
+			server.start();
+			assertTrue(first.entered.await(10, TimeUnit.SECONDS));
+			await(() -> recoveries.size() == 1);
+			assertEquals(2, warnings.size());
+			assertEquals(1, traces.get());
+			assertTrue(warnings.get(1).contains("1000ms"));
+			listener.actions.add(new IOException("Another failure episode"));
+			listener.actions.add(second);
+			assertTrue(second.entered.await(5, TimeUnit.SECONDS));
+			await(() -> recoveries.size() == 2);
+			assertEquals(3, warnings.size());
+			assertEquals(2, traces.get());
+			assertTrue(warnings.get(2).contains("100ms"), "Success must reset backoff and logging");
+		} finally {
+			server.stop();
+		}
+	}
+
+	@Test
+	void recoverableAcceptFailurePreservesConnectionsAndDiscovery(@TempDir Path directory) throws Exception {
+		ScriptedListener listener = new ScriptedListener();
+		McpServer server = scriptedServer(listener);
+		Path path = directory.resolve("ide.lock");
+		LockFileManager lock = new LockFileManager(path, "test", "nonce", "endpoint", List::of, LOG);
+		AtomicInteger stops = new AtomicInteger();
+		server.setStopHandler(() -> { stops.incrementAndGet(); lock.deleteLockFile(); });
+		IdleConnection first = new IdleConnection();
+		IdleConnection second = new IdleConnection();
+		try {
+			synchronized (server) {
+				server.start();
+				lock.writeLockFile();
+			}
+			listener.actions.add(first);
+			assertTrue(first.entered.await(5, TimeUnit.SECONDS));
+			listener.actions.add(new IOException("Temporary resource exhaustion"));
+			listener.actions.add(second);
+			assertTrue(second.entered.await(5, TimeUnit.SECONDS));
+			assertEquals(2, connectionCount(server));
+			assertTrue(first.isOpen());
+			assertTrue(server.isRunning());
+			assertTrue(Files.exists(path));
+			assertEquals(0, stops.get());
+		} finally {
+			server.stop();
+		}
+		assertEquals(1, stops.get());
+		assertFalse(Files.exists(path));
+	}
+
+	@Test
+	void repeatedAcceptFailuresBackOffAndShutdownInterruptsRetry() throws Exception {
+		ScriptedListener listener = new ScriptedListener();
+		McpServer server = scriptedServer(listener);
+		for (int i = 0; i < 100; i++) {
+			listener.actions.add(new IOException("Resource exhaustion"));
+		}
+		try {
+			server.start();
+			Thread accept = (Thread) field(server, "acceptThread");
+			await(() -> listener.attempts.get() >= 4);
+			assertTrue(server.isRunning());
+			assertTrue(listener.attempts.get() < 10, "Failures must not cause a busy loop");
+			for (int i = 1; i <= 3; i++) {
+				long intervalMs = TimeUnit.NANOSECONDS.toMillis(listener.callTimes.get(i) - listener.callTimes.get(i - 1));
+				assertTrue(intervalMs >= 80L << (i - 1), "Retry intervals must grow exponentially");
+			}
+			server.stop();
+			accept.join(500);
+			assertFalse(accept.isAlive(), "Shutdown must interrupt retry sleep");
+		} finally {
+			server.stop();
+		}
+	}
+
+	@Test
+	void closedListenerStopsConnectionsAndDiscovery(@TempDir Path directory) throws Exception {
+		ScriptedListener listener = new ScriptedListener();
+		McpServer server = scriptedServer(listener);
+		Path path = directory.resolve("ide.lock");
+		LockFileManager lock = new LockFileManager(path, "test", "nonce", "endpoint", List::of, LOG);
+		CountDownLatch stopped = new CountDownLatch(1);
+		server.setStopHandler(() -> { lock.deleteLockFile(); stopped.countDown(); });
+		IdleConnection connection = new IdleConnection();
+		try {
+			synchronized (server) {
+				server.start();
+				lock.writeLockFile();
+			}
+			listener.actions.add(connection);
+			assertTrue(connection.entered.await(5, TimeUnit.SECONDS));
+			listener.open = false;
+			listener.actions.add(new IOException("Listener became unusable"));
+			assertTrue(stopped.await(5, TimeUnit.SECONDS));
+			assertFalse(server.isRunning());
+			assertFalse(connection.isOpen());
+			assertEquals(0, connectionCount(server));
+			assertFalse(Files.exists(path));
+			lock.propertyChange(new PropertyChangeEvent(lock, WorkspaceFolderStyle.PREF_KEY, "PROJECTS", "WORKSPACE"));
+			assertFalse(Files.exists(path), "Queued preference events must not recreate discovery");
+		} finally {
+			server.stop();
+		}
+	}
+
+	@Test
+	void startupPublicationCannotRaceFatalAcceptCleanup(@TempDir Path directory) throws Exception {
+		ScriptedListener listener = new ScriptedListener();
+		listener.actions.add(new IllegalStateException("Immediate listener failure"));
+		McpServer server = scriptedServer(listener);
+		Path path = directory.resolve("ide.lock");
+		LockFileManager lock = new LockFileManager(path, "test", "nonce", "endpoint", List::of, LOG);
+		CountDownLatch stopped = new CountDownLatch(1);
+		server.setStopHandler(() -> { lock.deleteLockFile(); stopped.countDown(); });
+		try {
+			synchronized (server) {
+				server.start();
+				lock.writeLockFile();
+				assertTrue(Files.exists(path));
+				assertEquals(1, stopped.getCount(), "Startup must exclude fatal cleanup while publishing");
+			}
+			assertTrue(stopped.await(5, TimeUnit.SECONDS));
+			assertFalse(Files.exists(path));
+			assertFalse(server.isRunning());
+		} finally {
+			server.stop();
+		}
+	}
+
+	@Test
+	void failedListenerStartupNotifiesStopOnce() throws Exception {
+		McpServer server = new McpServer(null, null, "test", (tool, args) -> null, LOG) {
+			@Override
+			Listener createListener() throws IOException {
+				throw new IOException("Cannot create listener");
+			}
+		};
+		AtomicInteger stops = new AtomicInteger();
+		server.setStopHandler(stops::incrementAndGet);
+		assertThrows(IOException.class, server::start);
+		assertFalse(server.isRunning());
+		assertNull(field(server, "listener"));
+		assertNull(field(server, "acceptThread"));
+		assertEquals(1, stops.get());
+		server.stop();
+		assertEquals(1, stops.get());
+	}
+
+	@Test
+	void startupFailurePreservesCauseWhenStopHandlerThrows() {
+		IOException failure = new IOException("Cannot create listener");
+		IllegalStateException cleanup = new IllegalStateException("Stop handler failed");
+		McpServer server = new McpServer(null, null, "test", (tool, args) -> null, LOG) {
+			@Override
+			Listener createListener() throws IOException { throw failure; }
+		};
+		server.setStopHandler(() -> { throw cleanup; });
+		assertSame(failure, assertThrows(IOException.class, server::start));
+		assertArrayEquals(new Throwable[] { cleanup }, failure.getSuppressed());
+		assertFalse(server.isRunning());
+	}
+
+	@Test
+	void teardownFailuresStillCloseOtherConnectionsAndRemoveDiscovery(@TempDir Path directory) throws Exception {
+		ScriptedListener listener = new ScriptedListener() {
+			@Override
+			public void close() {
+				super.close();
+				throw new IllegalStateException("Listener close failed");
+			}
+		};
+		IdleConnection broken = new IdleConnection() {
+			@Override
+			public void close() {
+				super.close();
+				throw new IllegalStateException("Connection close failed");
+			}
+		};
+		IdleConnection normal = new IdleConnection();
+		McpServer server = scriptedServer(listener);
+		Path path = directory.resolve("ide.lock");
+		LockFileManager lock = new LockFileManager(path, "test", "nonce", "endpoint", List::of, LOG);
+		AtomicInteger stops = new AtomicInteger();
+		server.setStopHandler(() -> { stops.incrementAndGet(); lock.deleteLockFile(); });
+		try {
+			synchronized (server) {
+				server.start();
+				lock.writeLockFile();
+			}
+			Thread accept = (Thread) field(server, "acceptThread");
+			listener.actions.add(broken);
+			listener.actions.add(normal);
+			assertTrue(broken.entered.await(5, TimeUnit.SECONDS));
+			assertTrue(normal.entered.await(5, TimeUnit.SECONDS));
+			server.stop();
+			accept.join(5000);
+			assertFalse(accept.isAlive());
+			assertFalse(normal.isOpen());
+			assertFalse(broken.isOpen());
+			assertFalse(Files.exists(path));
+			assertNull(field(server, "listener"));
+			assertNull(field(server, "acceptThread"));
+			assertEquals(0, connectionCount(server));
+			assertEquals(1, stops.get());
+		} finally {
+			server.stop();
+		}
+	}
+
+	@Test
+	void teardownFailureIsReportedWithStopHandlerFailureSuppressed() throws Exception {
+		IllegalStateException teardown = new IllegalStateException("Teardown failed");
+		IllegalStateException handler = new IllegalStateException("Stop handler failed");
+		ILog failingLog = ILog.class.cast(java.lang.reflect.Proxy.newProxyInstance(
+				ILog.class.getClassLoader(), new Class<?>[] { ILog.class }, (proxy, method, args) -> {
+					if (method.getName().equals("info") && "[MCP] Server stopped".equals(args[0])) {
+						throw teardown;
+					}
+					return null;
+				}));
+		ScriptedListener listener = new ScriptedListener();
+		McpServer server = scriptedServer(listener, failingLog);
+		AtomicInteger stops = new AtomicInteger();
+		server.setStopHandler(() -> {
+			stops.incrementAndGet();
+			throw handler;
+		});
+		server.start();
+		assertSame(teardown, assertThrows(IllegalStateException.class, server::stop));
+		assertArrayEquals(new Throwable[] { handler }, teardown.getSuppressed());
+		assertEquals(1, stops.get(), "Stop handler must still run after a teardown failure");
+		assertFalse(server.isRunning());
+		assertFalse(listener.isOpen());
+	}
+
+	@Test
+	void stopHandlerFailureIsReportedWhenTeardownSucceeds() throws Exception {
+		IllegalStateException handler = new IllegalStateException("Stop handler failed");
+		McpServer server = scriptedServer(new ScriptedListener());
+		server.setStopHandler(() -> { throw handler; });
+		server.start();
+		assertSame(handler, assertThrows(IllegalStateException.class, server::stop));
+		assertEquals(0, handler.getSuppressed().length);
+		assertFalse(server.isRunning());
+	}
+
+	@Test
+	void displayActionIgnoresOnlyConcurrentDisposal() {
+		DisposedDisplays.ignoreDisposed(() -> {
+			throw new org.eclipse.swt.SWTException(org.eclipse.swt.SWT.ERROR_DEVICE_DISPOSED);
+		});
+		var other = assertThrows(org.eclipse.swt.SWTException.class, () -> DisposedDisplays.ignoreDisposed(() -> {
+			throw new org.eclipse.swt.SWTException(org.eclipse.swt.SWT.ERROR_THREAD_INVALID_ACCESS);
+		}));
+		assertEquals(org.eclipse.swt.SWT.ERROR_THREAD_INVALID_ACCESS, other.code);
+		IllegalStateException unrelated = new IllegalStateException("Not an SWT failure");
+		assertSame(unrelated, assertThrows(IllegalStateException.class,
+				() -> DisposedDisplays.ignoreDisposed(() -> { throw unrelated; })));
+		AtomicInteger ran = new AtomicInteger();
+		DisposedDisplays.ignoreDisposed(ran::incrementAndGet);
+		assertEquals(1, ran.get());
+	}
+
+	@Test
+	void fatalAcceptCleanupDoesNotInterruptItself() throws Exception {
+		ScriptedListener listener = new ScriptedListener();
+		listener.actions.add(new IllegalStateException("Fatal acceptance failure"));
+		McpServer server = scriptedServer(listener);
+		var interrupted = new java.util.concurrent.atomic.AtomicBoolean();
+		CountDownLatch stopped = new CountDownLatch(1);
+		server.setStopHandler(() -> {
+			interrupted.set(Thread.currentThread().isInterrupted());
+			stopped.countDown();
+		});
+		try {
+			server.start();
+			assertTrue(stopped.await(5, TimeUnit.SECONDS));
+			assertFalse(interrupted.get(), "Cleanup must not inherit a self-interrupt");
+		} finally {
+			server.stop();
+		}
+	}
+
+	@Test
+	void workerStartupFailureStopsServerAndDiscovery(@TempDir Path directory) throws Exception {
+		ScriptedListener listener = new ScriptedListener();
+		AtomicInteger starts = new AtomicInteger();
+		McpServer server = new McpServer(null, null, "test", (tool, args) -> null, LOG) {
+			@Override
+			Listener createListener() { return listener; }
+			@Override
+			void startConnectionThread(Runnable handler, long connId) {
+				if (starts.incrementAndGet() == 2) {
+					throw new OutOfMemoryError("Simulated worker startup failure");
+				}
+				super.startConnectionThread(handler, connId);
+			}
+		};
+		Path path = directory.resolve("ide.lock");
+		LockFileManager lock = new LockFileManager(path, "test", "nonce", "endpoint", List::of, LOG);
+		AtomicInteger stops = new AtomicInteger();
+		CountDownLatch stopped = new CountDownLatch(1);
+		server.setStopHandler(() -> { stops.incrementAndGet(); lock.deleteLockFile(); stopped.countDown(); });
+		IdleConnection first = new IdleConnection();
+		IdleConnection failed = new IdleConnection();
+		try {
+			synchronized (server) {
+				server.start();
+				lock.writeLockFile();
+			}
+			listener.actions.add(first);
+			assertTrue(first.entered.await(5, TimeUnit.SECONDS));
+			listener.actions.add(failed);
+			assertTrue(stopped.await(5, TimeUnit.SECONDS));
+			assertFalse(server.isRunning());
+			assertFalse(listener.isOpen());
+			assertFalse(first.isOpen());
+			assertEquals(1, failed.closes.get());
+			assertFalse(Files.exists(path));
+			assertEquals(0, connectionCount(server));
+			server.stop();
+			assertEquals(1, stops.get());
+		} finally {
+			server.stop();
+		}
+	}
+
+	@ParameterizedTest
+	@ValueSource(ints = { 0, 1, 2 })
+	void staleAcceptResultCannotAffectRestartedServer(int resultType) throws Exception {
+		CountDownLatch entered = new CountDownLatch(1);
+		CountDownLatch release = new CountDownLatch(1);
+		IdleConnection stale = new IdleConnection();
+		ScriptedListener old = new ScriptedListener() {
+			@Override
+			public McpServer.Connection accept() throws IOException {
+				entered.countDown();
+				boolean interrupted = false;
+				while (release.getCount() != 0) {
+					try {
+						release.await();
+					} catch (InterruptedException e) {
+						interrupted = true;
+					}
+				}
+				if (interrupted) {
+					Thread.currentThread().interrupt();
+				}
+				return switch (resultType) {
+				case 0 -> throw new IOException("Late I/O error from obsolete listener");
+				case 1 -> throw new IllegalStateException("Late fatal error from obsolete listener");
+				default -> stale;
+				};
+			}
+		};
+		ScriptedListener current = new ScriptedListener();
+		AtomicInteger generations = new AtomicInteger();
+		AtomicInteger stops = new AtomicInteger();
+		McpServer server = new McpServer(null, null, "test", (tool, args) -> null, LOG) {
+			@Override
+			Listener createListener() { return generations.getAndIncrement() == 0 ? old : current; }
+		};
+		server.setStopHandler(stops::incrementAndGet);
+		try {
+			server.start();
+			Thread obsolete = (Thread) field(server, "acceptThread");
+			assertTrue(entered.await(5, TimeUnit.SECONDS));
+			server.stop();
+			server.start();
+			release.countDown();
+			obsolete.join(5000);
+			assertFalse(obsolete.isAlive());
+			assertTrue(server.isRunning());
+			assertTrue(current.isOpen());
+			assertEquals(1, stops.get());
+			if (resultType == 2) {
+				assertEquals(1, stale.closes.get());
+			}
+			IdleConnection connection = new IdleConnection();
+			current.actions.add(connection);
+			assertTrue(connection.entered.await(5, TimeUnit.SECONDS));
+		} finally {
+			release.countDown();
+			server.stop();
+		}
+	}
+
+	@Test
+	void discoveryDeletionWaitsForActiveWriteAndPreventsLaterWrites(@TempDir Path directory) throws Exception {
+		CountDownLatch writing = new CountDownLatch(1);
+		CountDownLatch release = new CountDownLatch(1);
+		Path path = directory.resolve("ide.lock");
+		LockFileManager lock = new LockFileManager(path, "test", "nonce", "endpoint", () -> {
+			writing.countDown();
+			try {
+				assertTrue(release.await(5, TimeUnit.SECONDS));
+			} catch (InterruptedException e) {
+				throw new AssertionError(e);
+			}
+			return List.of("workspace");
+		}, LOG);
+		Future<Boolean> writer = async(() -> { lock.writeLockFile(); return true; });
+		try {
+			assertTrue(writing.await(5, TimeUnit.SECONDS));
+			var deletingThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
+			Future<Boolean> delete = async(() -> {
+				deletingThread.set(Thread.currentThread());
+				lock.deleteLockFile();
+				return true;
+			});
+			await(() -> deletingThread.get() != null && deletingThread.get().getState() == Thread.State.BLOCKED);
+			assertFalse(delete.isDone(), "Deletion must wait for the active writer");
+			release.countDown();
+			assertTrue(result(writer));
+			assertTrue(result(delete));
+			assertFalse(Files.exists(path));
+			lock.writeLockFile();
+			assertFalse(Files.exists(path));
+		} finally {
+			release.countDown();
+			lock.deleteLockFile();
+		}
 	}
 
 	@Test
@@ -407,6 +939,45 @@ class TransportTest {
 			assertHandleClosed(handle);
 			connection.close();
 			assertEquals(1, nativeCloses.get());
+		} finally {
+			pipe.close();
+		}
+	}
+
+	@Test
+	@EnabledOnOs(OS.WINDOWS)
+	void pipeAcceptanceRecoversAfterReplacementCreationFailure() throws Exception {
+		String name = pipeName();
+		NamedPipe pipe = new NamedPipe(name);
+		Field nameField = NamedPipe.class.getDeclaredField("name");
+		nameField.setAccessible(true);
+		nameField.set(pipe, "not-a-valid-pipe-name");
+		Future<Boolean> failed = async(() -> {
+			assertThrows(IOException.class, pipe::accept);
+			return true;
+		});
+		try {
+			try (RandomAccessFile client = new RandomAccessFile(name, "rw")) {
+				assertTrue(result(failed));
+			}
+			assertTrue(pipe.isOpen());
+			assertNull(field(pipe, "pending"));
+			nameField.set(pipe, name);
+			Future<McpServer.Connection> retry = async(pipe::accept);
+			await(() -> {
+				synchronized (pipe) {
+					try {
+						return field(pipe, "pending") != null;
+					} catch (Exception e) {
+						throw new AssertionError(e);
+					}
+				}
+			});
+			try (RandomAccessFile client = new RandomAccessFile(name, "rw");
+					McpServer.Connection connection = result(retry)) {
+				client.write(42);
+				assertEquals(42, connection.in().read());
+			}
 		} finally {
 			pipe.close();
 		}

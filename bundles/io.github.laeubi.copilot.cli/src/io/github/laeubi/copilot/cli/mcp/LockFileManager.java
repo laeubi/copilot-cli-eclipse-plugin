@@ -18,6 +18,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResourceChangeEvent;
@@ -37,35 +38,40 @@ public class LockFileManager implements IResourceChangeListener, IPropertyChange
 
 	private final Path lockFilePath;
 
-	private final String uuid;
-
 	private final String nonce;
 
 	private final String socketPathValue;
 
 	private final String ideName;
 
-	private final EclipseToolHandler toolHandler;
+	private final Supplier<List<String>> workspaceFolders;
+	private final ILog log;
+	private boolean closed;
 
-	static {
+	public LockFileManager(String ideName, String uuid, String nonce, String socketPathValue,
+			Supplier<List<String>> workspaceFolders) {
+		this(LOCK_DIR.resolve(uuid + ".lock"), ideName, nonce, socketPathValue, workspaceFolders, ILog.get());
 		cleanStaleLockFiles();
 	}
 
-	public LockFileManager(String ideName, String uuid, String nonce, String socketPathValue,
-			EclipseToolHandler toolHandler) {
+	LockFileManager(Path lockFilePath, String ideName, String nonce, String socketPathValue,
+			Supplier<List<String>> workspaceFolders, ILog log) {
 		this.ideName = ideName;
-		this.uuid = uuid;
 		this.nonce = nonce;
 		this.socketPathValue = socketPathValue;
-		this.toolHandler = toolHandler;
-		this.lockFilePath = LOCK_DIR.resolve(uuid + ".lock");
+		this.workspaceFolders = workspaceFolders;
+		this.lockFilePath = lockFilePath;
+		this.log = log;
 	}
 
 	/**
 	 * Write a lock file so Copilot CLI can discover this IDE instance.
 	 */
-	public void writeLockFile() throws IOException {
-		Files.createDirectories(LOCK_DIR);
+	public synchronized void writeLockFile() throws IOException {
+		if (closed) {
+			return;
+		}
+		Files.createDirectories(lockFilePath.getParent());
 
 		Map<String, Object> lock = new LinkedHashMap<>();
 		lock.put("socketPath", socketPathValue);
@@ -78,26 +84,25 @@ public class LockFileManager implements IResourceChangeListener, IPropertyChange
 		lock.put("pid", ProcessHandle.current().pid());
 		lock.put("ideName", ideName);
 		lock.put("timestamp", System.currentTimeMillis());
-		List<String> folders = toolHandler.getWorkspaceFolders();
-		ILog.get().info("[MCP Lifecycle] Workspace folders: " + folders);
+		List<String> folders = workspaceFolders.get();
+		log.info("[MCP Lifecycle] Workspace folders: " + folders);
 		lock.put("workspaceFolders", folders);
 		lock.put("isTrusted", true);
 
 		Files.writeString(lockFilePath, Json.serialize(lock), StandardCharsets.UTF_8);
-		ILog.get().info("MCP lock file written: " + lockFilePath);
+		log.info("MCP lock file written: " + lockFilePath);
 	}
 
 	/**
 	 * Delete the lock file written by this instance.
 	 */
-	public void deleteLockFile() {
-		if (lockFilePath != null) {
-			try {
-				Files.deleteIfExists(lockFilePath);
-				ILog.get().info("MCP lock file removed: " + lockFilePath);
-			} catch (IOException e) {
-				ILog.get().warn("Failed to delete MCP lock file: " + e.getMessage());
-			}
+	public synchronized void deleteLockFile() {
+		closed = true;
+		try {
+			Files.deleteIfExists(lockFilePath);
+			log.info("MCP lock file removed: " + lockFilePath);
+		} catch (IOException e) {
+			log.warn("Failed to delete MCP lock file: " + e.getMessage());
 		}
 	}
 
@@ -154,11 +159,11 @@ public class LockFileManager implements IResourceChangeListener, IPropertyChange
 			}
 		}
 		if (projectsChanged) {
-			ILog.get().info("[MCP Lifecycle] Project set changed, rewriting lock file");
+			log.info("[MCP Lifecycle] Project set changed, rewriting lock file");
 			try {
 				writeLockFile();
 			} catch (IOException e) {
-				ILog.get().warn("[MCP Lifecycle] Failed to rewrite lock file after project change: " + e.getMessage());
+				log.warn("[MCP Lifecycle] Failed to rewrite lock file after project change: " + e.getMessage());
 			}
 		}
 	}
@@ -166,15 +171,14 @@ public class LockFileManager implements IResourceChangeListener, IPropertyChange
 	@Override
 	public void propertyChange(PropertyChangeEvent event) {
 		if (WorkspaceFolderStyle.PREF_KEY.equals(event.getProperty())) {
-			ILog.get().info("[MCP Lifecycle] Workspace folder style changed to: " + event.getNewValue()
+			log.info("[MCP Lifecycle] Workspace folder style changed to: " + event.getNewValue()
 					+ " – rewriting lock file");
 			try {
 				writeLockFile();
 			} catch (IOException e) {
-				ILog.get().warn(
+				log.warn(
 						"[MCP Lifecycle] Failed to rewrite lock file after preference change: " + e.getMessage());
 			}
 		}
 	}
 }
-

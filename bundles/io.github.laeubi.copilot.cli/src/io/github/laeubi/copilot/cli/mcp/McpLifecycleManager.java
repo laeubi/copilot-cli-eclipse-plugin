@@ -40,6 +40,7 @@ public class McpLifecycleManager {
 	private final NotificationPusher notificationPusher;
 	private final McpServer server;
 	private final IWorkspace workspace;
+	private boolean stopped;
 
 	@Activate
 	public McpLifecycleManager(@Reference IWorkspace workspace) throws IOException {
@@ -71,38 +72,57 @@ public class McpLifecycleManager {
 
 		ILog.get().info("[MCP Lifecycle] Starting MCP server infrastructure...");
 		ILog.get().info("[MCP Lifecycle] UUID=" + uuid + " isWindows=" + isWindows);
-		try {
-			server.start();
-			this.lockFileManager = new LockFileManager("Eclipse IDE", uuid, nonce, socketPathValue, toolHandler);
-			workspace.addResourceChangeListener(lockFileManager);
-			IPreferenceStore prefs = getPreferenceStore();
-			if (prefs != null) {
-				prefs.addPropertyChangeListener(lockFileManager);
+		synchronized (server) {
+			server.setStopHandler(this::stop);
+			try {
+				server.start();
+				this.lockFileManager = new LockFileManager("Eclipse IDE", uuid, nonce, socketPathValue,
+						toolHandler::getWorkspaceFolders);
+				workspace.addResourceChangeListener(lockFileManager);
+				IPreferenceStore prefs = getPreferenceStore();
+				if (prefs != null) {
+					prefs.addPropertyChangeListener(lockFileManager);
+				}
+				lockFileManager.writeLockFile();
+				notificationPusher.start();
+				ILog.get().info("[MCP Lifecycle] MCP server started successfully for Copilot CLI /ide integration");
+			} catch (IOException | RuntimeException | Error e) {
+				ILog.get().error("[MCP Lifecycle] Failed to start MCP server", e);
+				try {
+					stop();
+				} catch (RuntimeException | Error cleanupError) {
+					if (cleanupError != e) {
+						e.addSuppressed(cleanupError);
+					}
+				}
+				throw e;
 			}
-			lockFileManager.writeLockFile();
-			notificationPusher.start();
-			ILog.get().info("[MCP Lifecycle] MCP server started successfully for Copilot CLI /ide integration");
-		} catch (IOException e) {
-			ILog.get().error("[MCP Lifecycle] Failed to start MCP server", e);
-			stop();
-			throw e;
 		}
 	}
 
 	@Deactivate
 	public void stop() {
-		ILog.get().info("[MCP Lifecycle] Stopping MCP server...");
-		IPreferenceStore prefs = getPreferenceStore();
-		if (prefs != null && lockFileManager != null) {
-			prefs.removePropertyChangeListener(lockFileManager);
+		synchronized (server) {
+			if (stopped) {
+				return;
+			}
+			stopped = true;
+			ILog.get().info("[MCP Lifecycle] Stopping MCP server...");
+			try {
+				server.stop();
+			} finally {
+				if (lockFileManager != null) {
+					lockFileManager.deleteLockFile();
+					IPreferenceStore prefs = getPreferenceStore();
+					if (prefs != null) {
+						prefs.removePropertyChangeListener(lockFileManager);
+					}
+					workspace.removeResourceChangeListener(lockFileManager);
+				}
+				notificationPusher.stop();
+			}
+			ILog.get().info("[MCP Lifecycle] MCP server stopped");
 		}
-		if (lockFileManager != null) {
-			workspace.removeResourceChangeListener(lockFileManager);
-			lockFileManager.deleteLockFile();
-		}
-		notificationPusher.stop();
-		server.stop();
-		ILog.get().info("[MCP Lifecycle] MCP server stopped");
 	}
 
 	private static IPreferenceStore getPreferenceStore() {
@@ -110,4 +130,3 @@ public class McpLifecycleManager {
 		return activator != null ? activator.getPreferenceStore() : null;
 	}
 }
-

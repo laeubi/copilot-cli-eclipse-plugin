@@ -21,7 +21,8 @@ This is an Eclipse IDE plugin that integrates GitHub Copilot CLI into the Eclips
 - `ide-cli-test` — standalone CLI test tool for MCP protocol testing (plain Maven JAR, not Tycho)
 - `transport-tests` — standalone JUnit transport lifecycle tests; compiles the transport
   sources directly and supplies an `ILog` test double because Eclipse's default logger
-  requires OSGi
+  requires OSGi. It also tests lock-file cleanup using injected workspace-folder
+  suppliers and temporary directories, without touching the user's discovery files.
 
 The plugin has Java classes organized into four packages under `io.github.laeubi.copilot.cli`:
 

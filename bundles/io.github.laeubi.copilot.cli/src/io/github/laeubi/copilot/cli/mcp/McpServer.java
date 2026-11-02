@@ -30,6 +30,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -52,6 +53,8 @@ public class McpServer {
 	private static final String MCP_PROTOCOL_VERSION = "2025-11-25";
 	private static final String SERVER_NAME = "vscode-copilot-cli";
 	private static final String SERVER_VERSION = "1.0.0";
+	private static final long ACCEPT_RETRY_MS = 100;
+	private static final long MAX_ACCEPT_RETRY_MS = 1000;
 
 	/** A connected client: a socket or a named pipe instance. */
 	interface Connection extends Closeable {
@@ -62,8 +65,10 @@ public class McpServer {
 		boolean isOpen();
 	}
 
-	private interface Listener {
+	interface Listener {
 		Connection accept() throws IOException;
+
+		boolean isOpen();
 
 		void close();
 	}
@@ -80,6 +85,8 @@ public class McpServer {
 	private final Set<Thread> workers = new HashSet<>();
 
 	private Listener listener;
+	private Thread acceptThread;
+	private Runnable stopHandler = () -> {};
 
 	/**
 	 * Create a server that listens on a Unix domain socket.
@@ -116,50 +123,112 @@ public class McpServer {
 			return;
 		}
 		try {
-			if (pipeName != null) {
-				listener = pipeListener(new NamedPipe(pipeName));
-				log.info("[MCP] Server listening on named pipe " + pipeName);
-			} else {
-				Files.deleteIfExists(socketPath);
-				ServerSocketChannel serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
-				try {
-					serverChannel.bind(UnixDomainSocketAddress.of(socketPath));
-					listener = socketListener(serverChannel);
-				} catch (IOException | RuntimeException | Error e) {
-					try {
-						serverChannel.close();
-					} catch (IOException closeError) {
-						e.addSuppressed(closeError);
-					}
-					throw e;
-				}
-				log.info("[MCP] Server listening on Unix socket " + socketPath);
-			}
-
+			listener = createListener();
+			log.info("[MCP] Server listening on " + (pipeName != null ? "named pipe " + pipeName : "Unix socket " + socketPath));
 			Listener accepting = listener;
 			// Platform threads: blocking native pipe calls would pin virtual threads.
-			Thread.ofPlatform().daemon().name("MCP accept").start(() -> {
-				while (running.get()) {
-					try {
-						Connection client = accepting.accept();
-						dispatchConnection(client, accepting);
-					} catch (IOException e) {
-						synchronized (this) {
-							if (running.get() && listener == accepting) {
-								log.error("[MCP] Error accepting connection: " + e.getMessage(), e);
-								stop();
-							}
-						}
+			acceptThread = Thread.ofPlatform().daemon().name("MCP accept").unstarted(() -> acceptConnections(accepting));
+			acceptThread.start();
+		} catch (IOException | RuntimeException | Error e) {
+			stopAfterFailure(e);
+			throw e;
+		}
+	}
+
+	Listener createListener() throws IOException {
+		if (pipeName != null) {
+			return pipeListener(new NamedPipe(pipeName));
+		}
+		Files.deleteIfExists(socketPath);
+		ServerSocketChannel serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
+		try {
+			serverChannel.bind(UnixDomainSocketAddress.of(socketPath));
+			return socketListener(serverChannel);
+		} catch (IOException | RuntimeException | Error e) {
+			try {
+				serverChannel.close();
+			} catch (IOException closeError) {
+				e.addSuppressed(closeError);
+			}
+			throw e;
+		}
+	}
+
+	synchronized void setStopHandler(Runnable handler) {
+		stopHandler = Objects.requireNonNull(handler);
+	}
+
+	private synchronized boolean isAccepting(Listener accepting) {
+		return running.get() && listener == accepting;
+	}
+
+	private void acceptConnections(Listener accepting) {
+		long retryMs = ACCEPT_RETRY_MS;
+		boolean retrying = false;
+		boolean capReported = false;
+		while (isAccepting(accepting)) {
+			try {
+				Connection client = accepting.accept();
+				dispatchConnection(client, accepting);
+				if (retrying && isAccepting(accepting)) {
+					log.info("[MCP] Connection acceptance recovered");
+				}
+				retryMs = ACCEPT_RETRY_MS;
+				retrying = false;
+				capReported = false;
+			} catch (IOException e) {
+				synchronized (this) {
+					if (!isAccepting(accepting)) {
 						return;
-					} catch (RuntimeException | Error e) {
-						stop();
-						throw e;
+					}
+					if (!accepting.isOpen()) {
+						log.error("[MCP] Listener closed unexpectedly", e);
+						stopAfterFailure(e);
+						return;
+					}
+					if (!retrying) {
+						log.warn("[MCP] Error accepting connection; retrying in " + retryMs + "ms", e);
+					} else if (retryMs == MAX_ACCEPT_RETRY_MS && !capReported) {
+						log.warn("[MCP] Connection acceptance still failing; retrying every " + retryMs + "ms");
+						capReported = true;
+					}
+					retrying = true;
+				}
+				try {
+					Thread.sleep(retryMs);
+				} catch (InterruptedException e1) {
+					Thread.currentThread().interrupt();
+					synchronized (this) {
+						if (isAccepting(accepting)) {
+							log.error("[MCP] Accept thread interrupted unexpectedly", e1);
+							stopAfterFailure(e1);
+						}
+					}
+					return;
+				}
+				retryMs = Math.min(retryMs * 2, MAX_ACCEPT_RETRY_MS);
+			} catch (RuntimeException | Error e) {
+				synchronized (this) {
+					if (isAccepting(accepting)) {
+						log.error("[MCP] Fatal connection acceptance failure", e);
+						stopAfterFailure(e);
+					} else {
+						log.warn("[MCP] Failure from an obsolete listener", e);
 					}
 				}
-			});
-		} catch (IOException | RuntimeException | Error e) {
+				return;
+			}
+		}
+	}
+
+	private void stopAfterFailure(Throwable failure) {
+		try {
 			stop();
-			throw e;
+		} catch (RuntimeException | Error cleanupError) {
+			if (cleanupError != failure) {
+				failure.addSuppressed(cleanupError);
+			}
+			log.error("[MCP] Cleanup after server failure failed", cleanupError);
 		}
 	}
 
@@ -207,32 +276,56 @@ public class McpServer {
 		if (!running.compareAndSet(true, false)) {
 			return;
 		}
-		log.info("[MCP] Server stopping...");
-		if (listener != null) {
-			try {
-				listener.close();
-			} catch (RuntimeException | Error e) {
-				log.warn("[MCP] Failed to close listener", e);
-			} finally {
-				listener = null;
-			}
-		}
-		for (Connection client : connections) {
-			closeConnection(client);
-		}
-		connections.clear();
-		for (Thread worker : workers) {
-			worker.interrupt();
-		}
-		sseClients.clear();
+		Throwable teardownFailure = null;
 		try {
-			if (socketPath != null) {
-				Files.deleteIfExists(socketPath);
+			log.info("[MCP] Server stopping...");
+			if (listener != null) {
+				try {
+					listener.close();
+				} catch (RuntimeException | Error e) {
+					log.warn("[MCP] Failed to close listener", e);
+				} finally {
+					listener = null;
+				}
 			}
-		} catch (IOException e) {
-			// ignore
+			if (acceptThread != null) {
+				if (acceptThread != Thread.currentThread()) {
+					acceptThread.interrupt();
+				}
+				acceptThread = null;
+			}
+			for (Connection client : connections) {
+				closeConnection(client);
+			}
+			connections.clear();
+			for (Thread worker : workers) {
+				worker.interrupt();
+			}
+			sseClients.clear();
+			try {
+				if (socketPath != null) {
+					Files.deleteIfExists(socketPath);
+				}
+			} catch (IOException e) {
+				log.warn("[MCP] Failed to remove Unix socket", e);
+			}
+			log.info("[MCP] Server stopped");
+		} catch (RuntimeException | Error e) {
+			teardownFailure = e;
+			throw e;
+		} finally {
+			try {
+				stopHandler.run();
+			} catch (RuntimeException | Error e) {
+				if (teardownFailure == null) {
+					throw e;
+				}
+				// Keep the pending teardown failure rather than letting this replace it.
+				if (e != teardownFailure) {
+					teardownFailure.addSuppressed(e);
+				}
+			}
 		}
-		log.info("[MCP] Server stopped");
 	}
 
 	public boolean isRunning() {
@@ -244,6 +337,11 @@ public class McpServer {
 			@Override
 			public Connection accept() throws IOException {
 				return pipe.accept();
+			}
+
+			@Override
+			public boolean isOpen() {
+				return pipe.isOpen();
 			}
 
 			@Override
@@ -288,6 +386,11 @@ public class McpServer {
 						channel.close();
 					}
 				}
+			}
+
+			@Override
+			public boolean isOpen() {
+				return serverChannel.isOpen();
 			}
 
 			@Override

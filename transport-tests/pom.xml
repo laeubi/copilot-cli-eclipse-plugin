@@ -17,6 +17,16 @@
       <version>3.34.100</version>
     </dependency>
     <dependency>
+      <groupId>org.eclipse.platform</groupId>
+      <artifactId>org.eclipse.core.resources</artifactId>
+      <version>3.23.100</version>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.platform</groupId>
+      <artifactId>org.eclipse.jface</artifactId>
+      <version>3.38.0</version>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <version>5.12.2</version>
@@ -36,6 +46,9 @@
             <include>**/mcp/McpToolHandler.java</include>
             <include>**/mcp/NamedPipe.java</include>
             <include>**/mcp/Json.java</include>
+            <include>**/mcp/LockFileManager.java</include>
+            <include>**/mcp/WorkspaceFolderStyle.java</include>
+            <include>**/mcp/DisposedDisplays.java</include>
           </includes>
         </configuration>
       </plugin>

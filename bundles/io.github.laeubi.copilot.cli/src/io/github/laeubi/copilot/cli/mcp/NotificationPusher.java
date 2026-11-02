@@ -60,7 +60,8 @@ public class NotificationPusher {
 	private IPartListener2 partListener;
 	private IResourceChangeListener resourceChangeListener;
 	private IWindowListener windowListener;
-	private boolean started = false;
+	private volatile boolean started = false;
+	private Display display;
 
 	public NotificationPusher(McpServer server, EclipseToolHandler toolHandler) {
 		this.server = server;
@@ -74,7 +75,11 @@ public class NotificationPusher {
 		started = true;
 		ILog.get().info("[MCP Notifications] Starting notification listeners...");
 
-		Display.getDefault().asyncExec(() -> {
+		display = Display.getDefault();
+		display.asyncExec(() -> {
+			if (!started) {
+				return;
+			}
 			try {
 				registerSelectionListener();
 				registerDiagnosticsListener();
@@ -90,14 +95,18 @@ public class NotificationPusher {
 		ILog.get().info("[MCP Notifications] Stopping notification listeners...");
 		scheduler.shutdownNow();
 
-		Display.getDefault().asyncExec(() -> {
+		if (display == null || display.isDisposed()) {
+			return;
+		}
+		Display stopping = display;
+		DisposedDisplays.ignoreDisposed(() -> stopping.asyncExec(() -> {
 			try {
 				unregisterListeners();
 				ILog.get().info("[MCP Notifications] Listeners unregistered");
 			} catch (Exception e) {
 				// ignore on shutdown
 			}
-		});
+		}));
 	}
 
 	private void registerSelectionListener() {
