@@ -97,13 +97,9 @@ If the command is not found, please install the GitHub Copilot CLI following the
 mvn -f transport-tests/pom.xml test
 ```
 
-They exercise connection cleanup on failure and shutdown without launching Eclipse.
-Windows runs the native named-pipe tests; Linux/macOS run the Unix socket bind-failure
-test. CI runs both the Linux build and a Windows transport-test job.
-
-The server cancels outstanding pipe operations on close, retaining each native
-buffer and pipe handle until its operations complete. Shutdown closes all accepted
-connections, including idle clients and partially received requests.
+The tests cover transport cleanup and shutdown without launching Eclipse. Shared
+lifecycle tests run across platforms, with additional Windows named-pipe and Unix
+socket tests. CI runs on Linux and Windows.
 
 ## Development Setup
 

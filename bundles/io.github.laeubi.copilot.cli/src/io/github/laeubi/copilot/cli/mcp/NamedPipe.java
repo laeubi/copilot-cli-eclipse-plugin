@@ -45,6 +45,7 @@ final class NamedPipe {
 	private static final int PIPE_UNLIMITED_INSTANCES = 255;
 	private static final int BUFFER_SIZE = 64 * 1024;
 	private static final int ERROR_BROKEN_PIPE = 109;
+	private static final int ERROR_NO_DATA = 232;
 	private static final int ERROR_PIPE_NOT_CONNECTED = 233;
 	private static final int ERROR_PIPE_CONNECTED = 535;
 	private static final int ERROR_OPERATION_ABORTED = 995;
@@ -87,7 +88,7 @@ final class NamedPipe {
 		CANCEL_IO_EX = linker.downcallHandle(kernel32.find("CancelIoEx").orElseThrow(),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS));
 		CLOSE_HANDLE = linker.downcallHandle(kernel32.find("CloseHandle").orElseThrow(),
-				FunctionDescriptor.of(JAVA_INT, ADDRESS));
+				FunctionDescriptor.of(JAVA_INT, ADDRESS), lastError);
 	}
 
 	private final String name;
@@ -109,6 +110,15 @@ final class NamedPipe {
 	 * between clients.
 	 */
 	McpServer.Connection accept() throws IOException {
+		while (true) {
+			McpServer.Connection connection = acceptInstance();
+			if (connection != null) {
+				return connection;
+			}
+		}
+	}
+
+	private McpServer.Connection acceptInstance() throws IOException {
 		PipeHandle handle;
 		synchronized (this) {
 			if (!open) {
@@ -120,10 +130,11 @@ final class NamedPipe {
 			handle = pending;
 		}
 		boolean transferred = false;
+		Throwable failure = null;
 		try {
 			int result = overlapped(handle,
 					(state, ov) -> (int) CONNECT_NAMED_PIPE.invokeExact(state, handle.value, ov));
-			if (result < 0 && result != -ERROR_PIPE_CONNECTED) {
+			if (result < 0 && result != -ERROR_PIPE_CONNECTED && result != -ERROR_NO_DATA) {
 				throw new IOException("ConnectNamedPipe failed: " + -result);
 			}
 			synchronized (this) {
@@ -132,10 +143,17 @@ final class NamedPipe {
 				}
 				pending = null;
 				pending = createInstance();
+				if (result == -ERROR_NO_DATA) {
+					// Replace the disconnected instance before closing it so the name stays available.
+					return null;
+				}
 				McpServer.Connection connection = new PipeConnection(handle);
 				transferred = true;
 				return connection;
 			}
+		} catch (IOException | RuntimeException | Error e) {
+			failure = e;
+			throw e;
 		} finally {
 			if (!transferred) {
 				synchronized (this) {
@@ -143,7 +161,16 @@ final class NamedPipe {
 						pending = null;
 					}
 				}
-				handle.close();
+				if (failure == null) {
+					// Only a discarded early-disconnected instance gets here; its release failure is recoverable.
+					try {
+						handle.close();
+					} catch (RuntimeException e) {
+						throw new IOException("Failed to release disconnected pipe instance", e);
+					}
+				} else {
+					cleanup(handle::close, failure);
+				}
 			}
 		}
 	}
@@ -153,8 +180,9 @@ final class NamedPipe {
 		if (open) {
 			open = false;
 			if (pending != null) {
-				pending.close();
+				PipeHandle handle = pending;
 				pending = null;
+				handle.close();
 			}
 		}
 	}
@@ -168,17 +196,13 @@ final class NamedPipe {
 			if (handle.equals(INVALID_HANDLE_VALUE)) {
 				throw new IOException("CreateNamedPipeW failed for " + name + ": " + lastError(state));
 			}
-			boolean transferred = false;
 			try {
-				PipeHandle owner = new PipeHandle(handle);
-				transferred = true;
-				return owner;
-			} finally {
-				if (!transferred) {
-					closeHandle(handle);
-				}
+				return new PipeHandle(handle);
+			} catch (RuntimeException | Error e) {
+				cleanup(() -> closeHandle(handle), e);
+				throw e;
 			}
-		} catch (IOException e) {
+		} catch (IOException | RuntimeException | Error e) {
 			throw e;
 		} catch (Throwable t) {
 			throw new IOException(t);
@@ -188,6 +212,22 @@ final class NamedPipe {
 	@FunctionalInterface
 	private interface Start {
 		int call(MemorySegment state, MemorySegment overlapped) throws Throwable;
+	}
+
+	// Per-handle test seam; never installed on production connections.
+	interface OperationHook {
+		void registered();
+
+		void starting();
+
+		void closed();
+	}
+
+	static void installOperationHook(McpServer.Connection connection, OperationHook hook) {
+		PipeHandle handle = ((PipeConnection) connection).handle;
+		synchronized (handle) {
+			handle.operationHook = hook;
+		}
 	}
 
 	/**
@@ -203,7 +243,7 @@ final class NamedPipe {
 			if (event.equals(MemorySegment.NULL)) {
 				throw new IOException("CreateEventW failed: " + lastError(state));
 			}
-			try {
+			try (Cleanup eventCleanup = new Cleanup(() -> closeHandle(event))) {
 				MemorySegment ov = arena.allocate(OVERLAPPED_SIZE, 8);
 				ov.set(ADDRESS, OVERLAPPED_EVENT, event);
 				MemorySegment count = arena.allocate(JAVA_INT);
@@ -213,12 +253,18 @@ final class NamedPipe {
 					}
 					handle.operations++;
 				}
-				try {
+				try (Cleanup operationCleanup = new Cleanup(handle::finished)) {
+					if (handle.operationHook != null) {
+						handle.operationHook.registered();
+					}
 					synchronized (handle) {
 						if (!handle.open) {
 							throw new IOException("Pipe closed");
 						}
 						// Issue under the close lock so cancellation cannot miss this operation.
+						if (handle.operationHook != null) {
+							handle.operationHook.starting();
+						}
 						if (start.call(state, ov) == 0 && lastError(state) != ERROR_IO_PENDING) {
 							return -lastError(state);
 						}
@@ -227,13 +273,9 @@ final class NamedPipe {
 						return -lastError(state);
 					}
 					return count.get(JAVA_INT, 0);
-				} finally {
-					handle.finished();
 				}
-			} finally {
-				closeHandle(event);
 			}
-		} catch (IOException e) {
+		} catch (IOException | RuntimeException | Error e) {
 			throw e;
 		} catch (Throwable t) {
 			throw new IOException(t);
@@ -252,6 +294,7 @@ final class NamedPipe {
 		private final MemorySegment value;
 		private boolean open = true;
 		private int operations;
+		private OperationHook operationHook;
 
 		PipeHandle(MemorySegment value) {
 			this.value = value;
@@ -267,7 +310,7 @@ final class NamedPipe {
 			}
 			open = false;
 			if (operations == 0) {
-				closeHandle(value);
+				release();
 			} else {
 				try {
 					int ignored = (int) CANCEL_IO_EX.invokeExact(value, MemorySegment.NULL);
@@ -280,16 +323,53 @@ final class NamedPipe {
 		synchronized void finished() {
 			if (--operations == 0 && !open) {
 				// Cancellation is only a request: retain the handle until every waiter completes.
-				closeHandle(value);
+				release();
+			}
+		}
+
+		private void release() {
+			closeHandle(value);
+			if (operationHook != null) {
+				operationHook.closed();
 			}
 		}
 	}
 
-	private static void closeHandle(MemorySegment handle) {
+	private record Cleanup(Runnable action) implements AutoCloseable {
+		@Override
+		public void close() {
+			action.run();
+		}
+	}
+
+	private static void cleanup(Runnable action, Throwable failure) {
 		try {
-			int ignored = (int) CLOSE_HANDLE.invokeExact(handle);
+			action.run();
+		} catch (RuntimeException | Error e) {
+			if (failure == null) {
+				throw e;
+			}
+			if (failure != e) {
+				failure.addSuppressed(e);
+			}
+		}
+	}
+
+	static void closeHandle(MemorySegment handle) {
+		closeHandle(handle, CLOSE_HANDLE);
+	}
+
+	// Per-call native boundary for release-failure tests.
+	static void closeHandle(MemorySegment handle, MethodHandle close) {
+		try (Arena arena = Arena.ofConfined()) {
+			MemorySegment state = arena.allocate(CALL_STATE);
+			if ((int) close.invokeExact(state, handle) == 0) {
+				throw new IllegalStateException("CloseHandle failed: " + lastError(state));
+			}
+		} catch (RuntimeException | Error e) {
+			throw e;
 		} catch (Throwable t) {
-			// ignore on close
+			throw new IllegalStateException("CloseHandle invocation failed", t);
 		}
 	}
 
@@ -386,7 +466,7 @@ final class NamedPipe {
 						written += n;
 					}
 				} catch (IOException e) {
-					PipeConnection.this.close();
+					cleanup(PipeConnection.this::close, e);
 					throw e;
 				}
 			}

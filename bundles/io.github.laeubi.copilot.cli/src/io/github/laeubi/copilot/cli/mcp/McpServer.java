@@ -77,6 +77,7 @@ public class McpServer {
 	private final CopyOnWriteArrayList<SseClient> sseClients = new CopyOnWriteArrayList<>();
 	private final AtomicLong connectionCounter = new AtomicLong(0);
 	private final Set<Connection> connections = new HashSet<>();
+	private final Set<Thread> workers = new HashSet<>();
 
 	private Listener listener;
 
@@ -183,13 +184,21 @@ public class McpServer {
 	}
 
 	void startConnectionThread(Runnable handler, long connId) {
-		Thread.ofPlatform().daemon().name("MCP #" + connId).start(handler);
+		Thread.Builder builder = pipeName != null ? Thread.ofPlatform().daemon() : Thread.ofVirtual();
+		Thread worker = builder.name("MCP #" + connId).unstarted(handler);
+		workers.add(worker);
+		try {
+			worker.start();
+		} catch (RuntimeException | Error e) {
+			workers.remove(worker);
+			throw e;
+		}
 	}
 
 	private void closeConnection(Connection client) {
 		try {
 			client.close();
-		} catch (IOException e) {
+		} catch (IOException | RuntimeException | Error e) {
 			log.warn("[MCP] Failed to close connection", e);
 		}
 	}
@@ -200,13 +209,21 @@ public class McpServer {
 		}
 		log.info("[MCP] Server stopping...");
 		if (listener != null) {
-			listener.close();
-			listener = null;
+			try {
+				listener.close();
+			} catch (RuntimeException | Error e) {
+				log.warn("[MCP] Failed to close listener", e);
+			} finally {
+				listener = null;
+			}
 		}
 		for (Connection client : connections) {
 			closeConnection(client);
 		}
 		connections.clear();
+		for (Thread worker : workers) {
+			worker.interrupt();
+		}
 		sseClients.clear();
 		try {
 			if (socketPath != null) {
@@ -395,12 +412,18 @@ public class McpServer {
 				}
 			}
 		} catch (IOException e) {
-			if (running.get()) {
+			if (e.getSuppressed().length > 0) {
+				// Keep suppressed release failures visible.
+				log.warn(prefix + " Connection error after " + requestCount + " request(s)", e);
+			} else if (running.get()) {
 				log.warn(prefix + " Connection error after " + requestCount + " request(s): " + e.getMessage());
 			}
+		} catch (RuntimeException e) {
+			log.warn(prefix + " Connection failed after " + requestCount + " request(s)", e);
 		} finally {
 			synchronized (this) {
 				connections.remove(channel);
+				workers.remove(Thread.currentThread());
 			}
 		}
 		log.info(prefix + " Connection closed, handled " + requestCount + " request(s)");

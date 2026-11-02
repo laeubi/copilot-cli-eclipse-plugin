@@ -20,6 +20,7 @@ import java.lang.foreign.Linker;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
+import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.StandardProtocolFamily;
@@ -28,16 +29,21 @@ import java.nio.channels.SocketChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
@@ -91,6 +97,98 @@ class TransportTest {
 
 	@Test
 	@EnabledOnOs(OS.WINDOWS)
+	void acceptRetriesClientDisconnectedBeforeAccept() throws Exception {
+		String name = pipeName();
+		NamedPipe pipe = new NamedPipe(name);
+		Object oldHandle = field(pipe, "pending");
+		try {
+			try (RandomAccessFile client = new RandomAccessFile(name, "rw")) {
+				// Disconnect before the server issues ConnectNamedPipe.
+			}
+			Future<McpServer.Connection> accept = async(pipe::accept);
+			await(() -> {
+				synchronized (pipe) {
+					try {
+						Object pending = field(pipe, "pending");
+						return pending != null && pending != oldHandle;
+					} catch (Exception e) {
+						throw new AssertionError(e);
+					}
+				}
+			});
+			try (RandomAccessFile client = new RandomAccessFile(name, "rw");
+					McpServer.Connection connection = result(accept)) {
+				client.write(42);
+				assertEquals(42, connection.in().read());
+				synchronized (oldHandle) {
+					assertEquals(false, field(oldHandle, "open"));
+					assertEquals(0, operationCount(oldHandle));
+				}
+			}
+		} finally {
+			pipe.close();
+		}
+	}
+
+	@Test
+	@EnabledOnOs(OS.WINDOWS)
+	void earlyDisconnectRetriesKeepPipeNameAvailable() throws Exception {
+		String name = pipeName();
+		NamedPipe pipe = new NamedPipe(name);
+		var stopping = new java.util.concurrent.atomic.AtomicBoolean();
+		Future<Boolean> accept = async(() -> {
+			try {
+				while (!stopping.get()) {
+					try (McpServer.Connection connection = pipe.accept()) {
+					}
+				}
+			} catch (IOException e) {
+				if (!stopping.get()) {
+					throw e;
+				}
+			}
+			return true;
+		});
+		try (Arena arena = Arena.ofConfined()) {
+			var lookup = SymbolLookup.libraryLookup("kernel32", arena);
+			var stateLayout = Linker.Option.captureStateLayout();
+			var lastError = stateLayout.varHandle(java.lang.foreign.MemoryLayout.PathElement.groupElement("GetLastError"));
+			var createFile = Linker.nativeLinker().downcallHandle(lookup.find("CreateFileW").orElseThrow(),
+					FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+							ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+							ValueLayout.ADDRESS),
+					Linker.Option.captureCallState("GetLastError"));
+			var close = Linker.nativeLinker().downcallHandle(lookup.find("CloseHandle").orElseThrow(),
+					FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
+			MemorySegment state = arena.allocate(stateLayout);
+			MemorySegment pipeName = arena.allocateFrom(ValueLayout.JAVA_BYTE,
+					(name + '\0').getBytes(java.nio.charset.StandardCharsets.UTF_16LE));
+			int connected = 0;
+			for (int i = 0; i < 10000; i++) {
+				try {
+					MemorySegment client = (MemorySegment) createFile.invokeExact(state, pipeName, 0xC0000000, 0,
+							MemorySegment.NULL, 3, 0, MemorySegment.NULL);
+					if (client.address() == -1L) {
+						assertEquals(231, (int) lastError.get(state, 0L),
+								"Only ERROR_PIPE_BUSY is allowed while the listener is open");
+					} else {
+						assertEquals(1, (int) close.invokeExact(client));
+						connected++;
+					}
+				} catch (Throwable t) {
+					throw new AssertionError(t);
+				}
+			}
+			assertTrue(connected > 1, "Multiple clients must connect to exercise instance replacement");
+		} finally {
+			stopping.set(true);
+			pipe.close();
+			assertTrue(result(accept));
+		}
+	}
+
+	@Test
+	@EnabledOnOs(OS.WINDOWS)
 	void closeCancelsAccept() throws Exception {
 		NamedPipe pipe = new NamedPipe(pipeName());
 		Object handle = field(pipe, "pending");
@@ -119,6 +217,10 @@ class TransportTest {
 
 	private static void assertHandleClosed(Object handle) throws Exception {
 		assertEquals(0, operationCount(handle));
+		assertFalse(nativeHandleOpen(handle), "Native pipe handle remains open");
+	}
+
+	private static boolean nativeHandleOpen(Object handle) throws Exception {
 		try (Arena arena = Arena.ofConfined()) {
 			var lookup = SymbolLookup.libraryLookup("kernel32", arena);
 			// A closed handle value may already have been reused for a non-pipe resource.
@@ -128,7 +230,7 @@ class TransportTest {
 			try {
 				int success = (int) info.invokeExact((MemorySegment) field(handle, "value"),
 						MemorySegment.NULL, MemorySegment.NULL, MemorySegment.NULL, MemorySegment.NULL);
-				assertEquals(0, success, "Native pipe handle remains open");
+				return success != 0;
 			} catch (Throwable t) {
 				throw new AssertionError(t);
 			}
@@ -236,28 +338,156 @@ class TransportTest {
 
 	@Test
 	@EnabledOnOs(OS.WINDOWS)
+	void nativeCloseReportsWin32Failure() {
+		IllegalStateException failure = assertThrows(IllegalStateException.class,
+				() -> NamedPipe.closeHandle(MemorySegment.NULL));
+		assertEquals("CloseHandle failed: 6", failure.getMessage());
+	}
+
+	@Test
+	@EnabledOnOs(OS.WINDOWS)
+	void nativeClosePreservesUncheckedInvocationFailuresAndWrapsCheckedFailures() {
+		for (Throwable failure : List.of(new IllegalArgumentException("bad invocation"),
+				new AssertionError("native linkage failure"), new IOException("checked invocation failure"))) {
+			var throwing = MethodHandles.throwException(int.class, failure.getClass()).bindTo(failure);
+			var close = MethodHandles.dropArguments(throwing, 0, MemorySegment.class, MemorySegment.class);
+			Class<? extends Throwable> expected = failure instanceof IOException ? IllegalStateException.class
+					: failure.getClass();
+			Throwable reported = assertThrows(expected, () -> NamedPipe.closeHandle(MemorySegment.NULL, close));
+			if (failure instanceof IOException) {
+				assertEquals("CloseHandle invocation failed", reported.getMessage());
+				assertSame(failure, reported.getCause());
+			} else {
+				assertSame(failure, reported);
+			}
+		}
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = { false, true })
+	@EnabledOnOs(OS.WINDOWS)
+	void operationFailurePreservesCauseWhenHandleReleaseThrows(boolean write) throws Exception {
+		String name = pipeName();
+		NamedPipe pipe = new NamedPipe(name);
+		Future<McpServer.Connection> accept = async(pipe::accept);
+		IllegalStateException cleanupFailure = new IllegalStateException("release observer failed");
+		AtomicInteger nativeStarts = new AtomicInteger();
+		AtomicInteger nativeCloses = new AtomicInteger();
+		try (RandomAccessFile client = new RandomAccessFile(name, "rw");
+				McpServer.Connection connection = result(accept)) {
+			Object handle = field(connection, "handle");
+			NamedPipe.installOperationHook(connection, new NamedPipe.OperationHook() {
+				@Override
+				public void registered() {
+					assertDoesNotThrow(connection::close);
+				}
+
+				@Override
+				public void starting() {
+					nativeStarts.incrementAndGet();
+				}
+
+				@Override
+				public void closed() {
+					nativeCloses.incrementAndGet();
+					throw cleanupFailure;
+				}
+			});
+			IOException failure = assertThrows(IOException.class, () -> {
+				if (write) {
+					connection.out().write(42);
+				} else {
+					connection.in().read();
+				}
+			});
+			assertEquals("Pipe closed", failure.getMessage());
+			assertArrayEquals(new Throwable[] { cleanupFailure }, failure.getSuppressed());
+			assertEquals(0, nativeStarts.get());
+			assertEquals(1, nativeCloses.get());
+			assertHandleClosed(handle);
+			connection.close();
+			assertEquals(1, nativeCloses.get());
+		} finally {
+			pipe.close();
+		}
+	}
+
+	@Test
+	@EnabledOnOs(OS.WINDOWS)
 	void closeRacingOperationStartNeverUsesClosedHandle() throws Exception {
-		for (int i = 0; i < 50; i++) {
-			String name = pipeName();
-			NamedPipe pipe = new NamedPipe(name);
-			Future<McpServer.Connection> accept = async(pipe::accept);
-			try (RandomAccessFile client = new RandomAccessFile(name, "rw");
-					McpServer.Connection connection = result(accept)) {
-				Object handle = field(connection, "handle");
-				Future<Boolean> read = async(() -> {
+		String name = pipeName();
+		NamedPipe pipe = new NamedPipe(name);
+		Future<McpServer.Connection> accept = async(pipe::accept);
+		CountDownLatch readRegistered = new CountDownLatch(1);
+		CountDownLatch writeRegistered = new CountDownLatch(1);
+		CountDownLatch releaseRead = new CountDownLatch(1);
+		CountDownLatch releaseWrite = new CountDownLatch(1);
+		AtomicInteger registered = new AtomicInteger();
+		AtomicInteger nativeStarts = new AtomicInteger();
+		AtomicInteger nativeCloses = new AtomicInteger();
+		try (RandomAccessFile client = new RandomAccessFile(name, "rw");
+				McpServer.Connection connection = result(accept)) {
+			Object handle = field(connection, "handle");
+			NamedPipe.installOperationHook(connection, new NamedPipe.OperationHook() {
+				@Override
+				public void registered() {
+					boolean read = registered.incrementAndGet() == 1;
+					(read ? readRegistered : writeRegistered).countDown();
 					try {
-						connection.in().read();
-					} catch (IOException expected) {
-						assertFalse(connection.isOpen());
+						assertTrue((read ? releaseRead : releaseWrite).await(5, TimeUnit.SECONDS),
+								"Registered operation was not released");
+					} catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+						throw new AssertionError(e);
 					}
+				}
+
+				@Override
+				public void starting() {
+					nativeStarts.incrementAndGet();
+				}
+
+				@Override
+				public void closed() {
+					nativeCloses.incrementAndGet();
+				}
+			});
+			try {
+				Future<Boolean> read = async(() -> {
+					assertThrows(IOException.class, () -> connection.in().read());
 					return true;
 				});
+				assertTrue(readRegistered.await(5, TimeUnit.SECONDS));
+				Future<Boolean> write = async(() -> {
+					assertThrows(IOException.class, () -> connection.out().write(42));
+					return true;
+				});
+				assertTrue(writeRegistered.await(5, TimeUnit.SECONDS));
+				assertEquals(2, operationCount(handle));
 				connection.close();
+				assertFalse(connection.isOpen());
+				assertTrue(nativeHandleOpen(handle), "Close must retain registered operations' handle");
+				assertEquals(0, nativeStarts.get());
+				assertEquals(0, nativeCloses.get());
+				releaseRead.countDown();
 				assertTrue(result(read));
+				assertEquals(1, operationCount(handle));
+				assertTrue(nativeHandleOpen(handle), "The last registered operation still owns the handle");
+				assertEquals(0, nativeStarts.get());
+				assertEquals(0, nativeCloses.get());
+				releaseWrite.countDown();
+				assertTrue(result(write));
 				assertHandleClosed(handle);
+				assertEquals(0, nativeStarts.get(), "No native operation may start after close");
+				assertEquals(1, nativeCloses.get());
+				connection.close();
+				assertEquals(1, nativeCloses.get(), "Repeated close must not release the handle twice");
 			} finally {
-				pipe.close();
+				releaseRead.countDown();
+				releaseWrite.countDown();
 			}
+		} finally {
+			pipe.close();
 		}
 	}
 
@@ -299,6 +529,53 @@ class TransportTest {
 			}
 		} finally {
 			server.stop();
+		}
+	}
+
+	@Test
+	void shutdownInterruptsWorkerWaitingForToolResult() throws Exception {
+		boolean windows = System.getProperty("os.name").startsWith("Windows");
+		Path path = Path.of(System.getProperty("java.io.tmpdir"), "mcp-" + UUID.randomUUID() + ".sock");
+		String name = pipeName();
+		var entered = new java.util.concurrent.CountDownLatch(1);
+		var interrupted = new java.util.concurrent.CountDownLatch(1);
+		var diffResult = new java.util.concurrent.CompletableFuture<Object>();
+		McpServer server = new McpServer(windows ? null : path, windows ? name : null, "test", (tool, args) -> {
+			assertEquals("open_diff", tool);
+			assertEquals(!windows, Thread.currentThread().isVirtual(),
+					"Unix workers must be virtual; native pipe workers must be platform threads");
+			entered.countDown();
+			try {
+				return diffResult.get();
+			} catch (InterruptedException e) {
+				interrupted.countDown();
+				throw e;
+			}
+		}, LOG);
+		server.start();
+		try (var client = connect(windows, name, path)) {
+			String body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
+					+ "\"params\":{\"name\":\"open_diff\",\"arguments\":{}}}";
+			String request = "POST /mcp HTTP/1.1\r\nAuthorization: Nonce test\r\nContent-Length: "
+					+ body.length() + "\r\n\r\n" + body;
+			client.out().write(request.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+			client.out().flush();
+			assertTrue(entered.await(5, TimeUnit.SECONDS));
+			server.stop();
+			assertTrue(interrupted.await(5, TimeUnit.SECONDS), "Tool-result wait was not interrupted");
+			await(() -> {
+				synchronized (server) {
+					try {
+						return ((Set<?>) field(server, "workers")).isEmpty();
+					} catch (Exception e) {
+						throw new AssertionError(e);
+					}
+				}
+			});
+			assertEquals(0, connectionCount(server));
+		} finally {
+			server.stop();
+			diffResult.complete(null);
 		}
 	}
 
@@ -394,5 +671,157 @@ class TransportTest {
 		}
 		assertTrue(closed[0]);
 		assertEquals(0, connectionCount(server));
+	}
+
+	private record Logged(String level, String message, Throwable failure) {
+	}
+
+	private static ILog recordingLog(List<Logged> logged) {
+		return ILog.class.cast(java.lang.reflect.Proxy.newProxyInstance(ILog.class.getClassLoader(),
+				new Class<?>[] { ILog.class }, (proxy, method, args) -> {
+					if (args != null && args.length > 0 && args[0] instanceof String message) {
+						Throwable failure = args.length > 1 && args[1] instanceof Throwable t ? t : null;
+						logged.add(new Logged(method.getName(), message, failure));
+					}
+					return null;
+				}));
+	}
+
+	private static McpServer.Connection failingClose(InputStream in, RuntimeException closeFailure, boolean[] closed) {
+		return new McpServer.Connection() {
+			public InputStream in() { return in; }
+			public OutputStream out() { return OutputStream.nullOutputStream(); }
+			public boolean isOpen() { return !closed[0]; }
+			public void close() {
+				closed[0] = true;
+				throw closeFailure;
+			}
+		};
+	}
+
+	@Test
+	@SuppressWarnings("unchecked")
+	void stopContinuesAfterReleaseFailures() throws Exception {
+		List<Logged> logged = new java.util.concurrent.CopyOnWriteArrayList<>();
+		McpServer server = new McpServer(null, "unused", "test", (tool, args) -> null, recordingLog(logged));
+		IllegalStateException listenerFailure = new IllegalStateException("Listener release failed");
+		IllegalStateException connectionFailure = new IllegalStateException("Connection release failed");
+		Class<?> listenerType = Class.forName(McpServer.class.getName() + "$Listener");
+		Object listener = java.lang.reflect.Proxy.newProxyInstance(listenerType.getClassLoader(),
+				new Class<?>[] { listenerType }, (proxy, method, args) -> {
+					if (method.getName().equals("close")) {
+						throw listenerFailure;
+					}
+					throw new UnsupportedOperationException(method.getName());
+				});
+		boolean[] brokenClosed = { false };
+		boolean[] normalClosed = { false };
+		McpServer.Connection broken = failingClose(InputStream.nullInputStream(), connectionFailure, brokenClosed);
+		McpServer.Connection normal = new McpServer.Connection() {
+			public InputStream in() { return InputStream.nullInputStream(); }
+			public OutputStream out() { return OutputStream.nullOutputStream(); }
+			public boolean isOpen() { return !normalClosed[0]; }
+			public void close() { normalClosed[0] = true; }
+		};
+		CountDownLatch interrupted = new CountDownLatch(1);
+		Thread worker = Thread.ofPlatform().daemon().start(() -> {
+			try {
+				Thread.sleep(TimeUnit.SECONDS.toMillis(30));
+			} catch (InterruptedException e) {
+				interrupted.countDown();
+			}
+		});
+		synchronized (server) {
+			((java.util.concurrent.atomic.AtomicBoolean) field(server, "running")).set(true);
+			Field listenerField = McpServer.class.getDeclaredField("listener");
+			listenerField.setAccessible(true);
+			listenerField.set(server, listener);
+			((Set<McpServer.Connection>) field(server, "connections")).add(broken);
+			((Set<McpServer.Connection>) field(server, "connections")).add(normal);
+			((Set<Thread>) field(server, "workers")).add(worker);
+		}
+		server.stop();
+		assertTrue(brokenClosed[0]);
+		assertTrue(normalClosed[0]);
+		assertNull(field(server, "listener"));
+		assertEquals(0, connectionCount(server));
+		assertTrue(interrupted.await(5, TimeUnit.SECONDS), "Release failures must not skip worker interruption");
+		assertTrue(logged.stream().anyMatch(entry -> entry.failure() == listenerFailure));
+		assertTrue(logged.stream().anyMatch(entry -> entry.failure() == connectionFailure));
+	}
+
+	@Test
+	void connectionReleaseFailureIsLogged() throws Exception {
+		List<Logged> logged = new java.util.concurrent.CopyOnWriteArrayList<>();
+		McpServer server = new McpServer(null, "unused", "test", (tool, args) -> null, recordingLog(logged));
+		((java.util.concurrent.atomic.AtomicBoolean) field(server, "running")).set(true);
+		Method handle = McpServer.class.getDeclaredMethod("handleConnection", McpServer.Connection.class, long.class);
+		handle.setAccessible(true);
+
+		IllegalStateException afterEof = new IllegalStateException("Release after EOF failed");
+		boolean[] closed = { false };
+		handle.invoke(server, failingClose(InputStream.nullInputStream(), afterEof, closed), 1L);
+		assertTrue(closed[0]);
+		assertTrue(logged.stream().anyMatch(entry -> entry.failure() == afterEof));
+
+		IOException readFailure = new IOException("Read failed");
+		IllegalStateException afterError = new IllegalStateException("Release after read failure failed");
+		InputStream failingRead = new InputStream() {
+			@Override
+			public int read() throws IOException {
+				throw readFailure;
+			}
+		};
+		handle.invoke(server, failingClose(failingRead, afterError, new boolean[1]), 2L);
+		assertTrue(logged.stream().anyMatch(entry -> entry.failure() == readFailure));
+		assertArrayEquals(new Throwable[] { afterError }, readFailure.getSuppressed());
+		assertEquals(0, connectionCount(server));
+	}
+
+	@Test
+	@EnabledOnOs(OS.WINDOWS)
+	void disconnectedInstanceReleaseFailureIsRecoverable() throws Exception {
+		String name = pipeName();
+		NamedPipe pipe = new NamedPipe(name);
+		Object oldHandle = field(pipe, "pending");
+		IllegalStateException releaseFailure = new IllegalStateException("Disconnected instance release failed");
+		Field hook = oldHandle.getClass().getDeclaredField("operationHook");
+		hook.setAccessible(true);
+		synchronized (oldHandle) {
+			hook.set(oldHandle, new NamedPipe.OperationHook() {
+				@Override
+				public void registered() {
+				}
+
+				@Override
+				public void starting() {
+				}
+
+				@Override
+				public void closed() {
+					throw releaseFailure;
+				}
+			});
+		}
+		try {
+			try (RandomAccessFile client = new RandomAccessFile(name, "rw")) {
+				// Disconnect before the server issues ConnectNamedPipe.
+			}
+			IOException failure = assertThrows(IOException.class, pipe::accept);
+			assertSame(releaseFailure, failure.getCause());
+			assertHandleClosed(oldHandle);
+			synchronized (pipe) {
+				assertTrue((boolean) field(pipe, "open"));
+				assertNotNull(field(pipe, "pending"));
+			}
+			Future<McpServer.Connection> accept = async(pipe::accept);
+			try (RandomAccessFile client = new RandomAccessFile(name, "rw");
+					McpServer.Connection connection = result(accept)) {
+				client.write(42);
+				assertEquals(42, connection.in().read());
+			}
+		} finally {
+			pipe.close();
+		}
 	}
 }
