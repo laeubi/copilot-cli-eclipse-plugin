@@ -24,7 +24,7 @@ An Eclipse plugin that integrates [GitHub Copilot CLI](https://github.com/github
 ## Prerequisites
 
 - Eclipse IDE (2025-03 or later recommended)
-- Java 22 or higher
+- Java 25 or higher
 - [GitHub Copilot CLI](https://github.com/github/copilot-cli) installed and configured
 - Active GitHub Copilot subscription
 
@@ -64,7 +64,7 @@ If the command is not found, please install the GitHub Copilot CLI following the
 ### Prerequisites for Building
 
 - Maven 3.9.x or higher
-- JDK 22 or higher
+- JDK 25 or higher
 
 ### Build Instructions
 

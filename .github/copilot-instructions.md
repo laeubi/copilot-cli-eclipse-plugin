@@ -6,7 +6,7 @@
 mvn clean verify
 ```
 
-Requires JDK 22+ and Maven 3.9+. The build uses **Tycho 5.0.2** to compile Eclipse plugins against p2
+Requires JDK 25+ and Maven 3.9+. The build uses **Tycho 5.0.2** to compile Eclipse plugins against p2
 repositories (Eclipse 2025-12 release). Transport regression tests run as part of the build, or
 independently with `mvn -f transport-tests/pom.xml test`. There are no linters configured. The build
 output is a p2 update site at `releng/io.github.laeubi.copilot.cli.repository/target/repository/`.
@@ -78,7 +78,7 @@ The embedded MCP server implements the [Copilot CLI `/ide` protocol](https://git
 
 ## Conventions
 
-- **Java 22** language level (the Windows named pipe uses the Foreign Function & Memory API). The bundle requires `JavaSE-22` execution environment.
+- **Java 25** language level (the Windows named pipe uses the Foreign Function & Memory API). The bundle requires `JavaSE-25` execution environment.
 - **No external dependencies** — the plugin depends only on Eclipse platform bundles (`org.eclipse.ui`, `org.eclipse.core.*`, `org.eclipse.terminal.*`, `org.eclipse.jface.text`, `org.eclipse.compare`, `org.eclipse.debug.core`, `org.eclipse.debug.ui`, `org.eclipse.ui.console`, `org.eclipse.cdt.utils.pty`). JSON handling uses a built-in minimal parser.
 - OSGi metadata lives in `META-INF/MANIFEST.MF` (not generated from pom.xml). The `plugin.xml` declares all extension points. Both files must be kept in sync with Java code changes.
 - The `copilot` command name is hardcoded in `CopilotCliConnector`. The plugin assumes the CLI is on the system PATH.

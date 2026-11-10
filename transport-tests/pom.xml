@@ -7,7 +7,7 @@
   <artifactId>transport-tests</artifactId>
   <version>1.0.0-SNAPSHOT</version>
   <properties>
-    <maven.compiler.release>22</maven.compiler.release>
+    <maven.compiler.release>25</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
   <dependencies>
