@@ -16,10 +16,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.net.InetSocketAddress;
+import java.io.RandomAccessFile;
 import java.net.StandardProtocolFamily;
-import java.net.URI;
 import java.net.UnixDomainSocketAddress;
+import java.nio.channels.ByteChannel;
 import java.nio.channels.Channels;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
@@ -43,12 +43,11 @@ public class IdeCliTest {
 	private static final AtomicInteger requestId = new AtomicInteger(0);
 
 	private static String socketPath;
-	private static String scheme;
 	private static String nonce;
 	private static String sessionId;
 
 	// Persistent connection for POST requests
-	private static SocketChannel postChannel;
+	private static ByteChannel postChannel;
 	private static BufferedReader postReader;
 	private static OutputStream postOs;
 
@@ -172,7 +171,6 @@ public class IdeCliTest {
 
 		LockFile selected = lockFiles.get(choice);
 		socketPath = (String) selected.data.get("socketPath");
-		scheme = (String) selected.data.getOrDefault("scheme", "pipe");
 		@SuppressWarnings("unchecked")
 		Map<String, Object> headers = (Map<String, Object>) selected.data.get("headers");
 		String authHeader = (String) headers.get("Authorization");
@@ -229,7 +227,7 @@ public class IdeCliTest {
 	private static void startSseListener() {
 		Thread.ofVirtual().name("sse-listener").start(() -> {
 			try {
-				SocketChannel sseChannel = openChannel();
+				ByteChannel sseChannel = openChannel();
 
 				OutputStream sseOs = Channels.newOutputStream(sseChannel);
 				InputStream sseIs = Channels.newInputStream(sseChannel);
@@ -519,15 +517,12 @@ public class IdeCliTest {
 	}
 
 	/**
-	 * Opens a {@link SocketChannel} to the server.  Uses TCP when the lock file
-	 * scheme is {@code "http"}, otherwise connects via Unix domain socket.
+	 * Opens a channel to the server: a named pipe on Windows, otherwise a Unix
+	 * domain socket.
 	 */
-	private static SocketChannel openChannel() throws IOException {
-		if ("http".equals(scheme)) {
-			URI uri = URI.create(socketPath);
-			SocketChannel ch = SocketChannel.open();
-			ch.connect(new InetSocketAddress(uri.getHost(), uri.getPort()));
-			return ch;
+	private static ByteChannel openChannel() throws IOException {
+		if (socketPath.startsWith("\\\\.\\pipe\\")) {
+			return new RandomAccessFile(socketPath, "rw").getChannel();
 		}
 		SocketChannel ch = SocketChannel.open(StandardProtocolFamily.UNIX);
 		ch.connect(UnixDomainSocketAddress.of(socketPath));

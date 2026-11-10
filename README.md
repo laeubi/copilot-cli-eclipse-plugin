@@ -24,7 +24,7 @@ An Eclipse plugin that integrates [GitHub Copilot CLI](https://github.com/github
 ## Prerequisites
 
 - Eclipse IDE (2025-03 or later recommended)
-- Java 21 or higher
+- Java 25 or higher
 - [GitHub Copilot CLI](https://github.com/github/copilot-cli) installed and configured
 - Active GitHub Copilot subscription
 
@@ -64,7 +64,7 @@ If the command is not found, please install the GitHub Copilot CLI following the
 ### Prerequisites for Building
 
 - Maven 3.9.x or higher
-- JDK 21 or higher
+- JDK 25 or higher
 
 ### Build Instructions
 
@@ -88,6 +88,18 @@ If the command is not found, please install the GitHub Copilot CLI following the
    ```
    releng/io.github.laeubi.copilot.cli.repository/target/io.github.laeubi.copilot.cli.repository-*.zip
    ```
+
+### Transport Regression Tests
+
+`mvn clean verify` includes the standalone transport tests. To run only those tests:
+
+```bash
+mvn -f transport-tests/pom.xml test
+```
+
+The tests cover transport cleanup, shutdown, and accept-failure recovery without
+launching Eclipse. Shared lifecycle tests run across platforms, with additional
+Windows named-pipe and Unix socket tests. CI runs on Linux and Windows.
 
 ## Development Setup
 
@@ -143,4 +155,3 @@ This project is licensed under the Eclipse Public License 2.0 - see the [LICENSE
 ## Support
 
 For issues, questions, or contributions, please use the [GitHub Issues](https://github.com/laeubi/copilot-cli-eclipse-plugin/issues) page.
-

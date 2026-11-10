@@ -4,7 +4,7 @@ Bundle-Name: GitHub Copilot CLI Plugin
 Bundle-SymbolicName: io.github.laeubi.copilot.cli;singleton:=true
 Bundle-Version: 1.0.0.qualifier
 Bundle-Vendor: Christoph Läubrich
-Bundle-RequiredExecutionEnvironment: JavaSE-21
+Bundle-RequiredExecutionEnvironment: JavaSE-25
 Bundle-Activator: io.github.laeubi.copilot.cli.Activator
 Require-Bundle: org.eclipse.ui,
  org.eclipse.core.runtime,
